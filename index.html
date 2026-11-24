@@ -1,139 +1,1534 @@
-<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Car Manager Maroc</title><link rel="manifest" href="manifest.json"><meta name="theme-color" content="#0f766e"><link rel="icon" href="icon-192.png">
-<style>
-:root{--bg:#f1f5f4;--c:#fff;--t:#0f1f1c;--m:#5b6b67;--p:#0f766e;--r:#b91c1c;--bd:#d6e0de}
-@media(prefers-color-scheme:dark){:root{--bg:#0d1514;--c:#16211f;--t:#e8f1ef;--m:#93a6a2;--p:#2dd4bf;--r:#f87171;--bd:#26362f}}
-*{box-sizing:border-box}body{margin:0;font-family:system-ui,"Segoe UI",Tahoma,sans-serif;background:var(--bg);color:var(--t);padding-bottom:env(safe-area-inset-bottom)}
-header{background:var(--p);color:#fff;padding:calc(10px + env(safe-area-inset-top)) 14px 0;position:sticky;top:0;z-index:5}
-header h1{font-size:17px;margin:0 0 8px}#nav{display:flex;gap:4px;overflow-x:auto}#nav a{padding:8px 12px;border-radius:8px 8px 0 0;white-space:nowrap;font-size:14px;opacity:.8;cursor:pointer}#nav a.on{background:var(--bg);color:var(--p);opacity:1;font-weight:700}
-#main{padding:12px;max-width:900px;margin:auto}.card{background:var(--c);border:1px solid var(--bd);border-radius:12px;padding:12px;margin:8px 0}.card small{display:block;color:var(--m);margin:3px 0}
-.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}.k{background:var(--c);border:1px solid var(--bd);border-radius:12px;padding:12px}.k b{display:block;font-size:20px;color:var(--p)}.k span{font-size:12px;color:var(--m)}
-button,.b{font:inherit;padding:8px 12px;border-radius:8px;border:1px solid var(--bd);background:var(--c);color:var(--t);cursor:pointer;margin:2px}.b,.pri{background:var(--p);color:#fff;border-color:var(--p)}.d{color:var(--r)}.ac{margin-top:6px}
-input,select,textarea{font:inherit;width:100%;padding:9px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--t);margin:3px 0 8px}label{font-size:13px;color:var(--m);display:block}
-#modal,#lock{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;z-index:20;padding:10px}.box{background:var(--c);border-radius:14px;padding:16px;width:100%;max-width:480px;max-height:92vh;overflow:auto}
-#lock{background:var(--p);z-index:40}table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-bottom:1px solid var(--bd);padding:6px;text-align:start}.warn{color:var(--r)}
-canvas{border:1px dashed var(--m);border-radius:8px;width:100%;height:140px;touch-action:none;background:#fff}.ph img{width:70px;height:55px;object-fit:cover;margin:2px;border-radius:6px}
-#print{display:none;position:fixed;inset:0;background:#fff;color:#000;overflow:auto;z-index:50;padding:12px}.doc{white-space:pre-wrap;line-height:1.9;font-size:14px;outline:1px dashed #aaa;padding:10px}.doc table td,.doc table th{color:#000}
-@media print{#app,.noprint,#modal{display:none!important}#print{position:static;padding:0}.doc{outline:none}}
-</style></head><body>
-<div id="app"><header><h1>🚗 Car Manager Maroc</h1><div id="nav"></div></header><div id="main"></div></div>
-<div id="modal"></div><div id="lock"></div><div id="print"></div>
-<script>
-/*CORE*/
-const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-const overlap=(a1,a2,b1,b2)=>a1<=b2&&b1<=a2;
-const days=(s,e)=>Math.round((new Date(e)-new Date(s))/864e5)+1;
-const total=b=>days(b.start,b.end)*(+b.price||0);
-const inR=(d,f,t)=>d>=f&&d<=t;
-function conflict(db,b){return db.bookings.find(x=>x.id!==b.id&&x.car===b.car&&x.status!=='cancelled'&&b.status!=='cancelled'&&overlap(b.start,b.end,x.start,x.end));}
-function carStats(db,car,f,t){
- const income=db.bookings.filter(b=>b.car===car&&b.status!=='cancelled'&&inR(b.start,f,t)).reduce((s,b)=>s+(+b.paid||0),0);
- const due=db.bookings.filter(b=>b.car===car&&b.status!=='cancelled'&&inR(b.start,f,t)).reduce((s,b)=>s+total(b)-(+b.paid||0),0);
- const exp=db.expenses.filter(x=>x.car===car&&inR(x.date,f,t)).reduce((s,x)=>s+(+x.amount||0),0);
- const doc=db.docs.filter(x=>x.car===car&&inR(x.date,f,t)).reduce((s,x)=>s+(+x.cost||0),0);
- return{income,due,exp:exp+doc,profit:income-exp-doc};}
-const hex=u=>[...new Uint8Array(u)].map(x=>x.toString(16).padStart(2,'0')).join('');
-async function hashPin(pin,salt){const m=await crypto.subtle.importKey('raw',new TextEncoder().encode(pin),'PBKDF2',false,['deriveBits']);return hex(await crypto.subtle.deriveBits({name:'PBKDF2',salt:new TextEncoder().encode(salt),iterations:150000,hash:'SHA-256'},m,256));}
-async function dkey(pw,salt){const m=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:150000,hash:'SHA-256'},m,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);}
-async function enc(obj,pw){const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));const c=await crypto.subtle.encrypt({name:'AES-GCM',iv},await dkey(pw,salt),new TextEncoder().encode(JSON.stringify(obj)));const o=new Uint8Array(28+c.byteLength);o.set(salt);o.set(iv,16);o.set(new Uint8Array(c),28);return o;}
-async function dec(buf,pw){const u=new Uint8Array(buf);const p=await crypto.subtle.decrypt({name:'AES-GCM',iv:u.slice(16,28)},await dkey(pw,u.slice(0,16)),u.slice(28));return JSON.parse(new TextDecoder().decode(p));}
-/*ENDCORE*/
-const $=(s,e=document)=>e.querySelector(s);
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const T={dash:['الرئيسية','Accueil'],cars:['السيارات','Voitures'],clients:['الزبائن','Clients'],bookings:['الحجوزات','Réservations'],expenses:['المصاريف','Dépenses'],docs:['التأمين والصيانة','Assurance & entretien'],reports:['التقارير','Rapports'],settings:['الإعدادات','Paramètres'],
-name:['الاسم','Nom'],plate:['الترقيم','Immatriculation'],year:['السنة','Année'],price:['الثمن/يوم (MAD)','Prix/jour (MAD)'],km:['العداد (كلم)','Kilométrage'],fuel:['الوقود','Carburant'],diesel:['ديزل','Diesel'],essence:['بنزين','Essence'],cin:['رقم ب.و.ت','N° CIN'],phone:['الهاتف','Téléphone'],license:['رخصة السياقة','Permis'],address:['العنوان','Adresse'],car:['السيارة','Voiture'],client:['الزبون','Client'],start:['من','Du'],end:['إلى','Au'],deposit:['الضمان (MAD)','Caution (MAD)'],paid:['المدفوع (MAD)','Payé (MAD)'],status:['الحالة','Statut'],reserved:['محجوز','Réservé'],active:['جارٍ','En cours'],done:['منتهٍ','Terminé'],cancelled:['ملغى','Annulé'],date:['التاريخ','Date'],cat:['الصنف','Catégorie'],carb:['وقود','Carburant'],repair:['إصلاح','Réparation'],wash:['غسيل','Lavage'],other:['أخرى','Autre'],amount:['المبلغ (MAD)','Montant (MAD)'],note:['ملاحظة','Note'],type:['النوع','Type'],insurance:['تأمين','Assurance'],technical:['فحص تقني','Contrôle technique'],maintenance:['صيانة','Entretien'],expiry:['تاريخ الانتهاء','Expiration'],cost:['التكلفة (MAD)','Coût (MAD)'],
-add:['إضافة','Ajouter'],edit:['تعديل','Modifier'],del:['حذف','Supprimer'],save:['حفظ','Enregistrer'],cancel:['إلغاء','Annuler'],close:['إغلاق','Fermer'],print:['طباعة / PDF','Imprimer / PDF'],contract:['العقد','Contrat'],out:['محضر التسليم','PV départ'],in:['محضر الاسترجاع','PV retour'],conflict:['⛔ تضارب: السيارة محجوزة في هذه الفترة','⛔ Conflit : voiture déjà réservée sur cette période'],bad:['بيانات غير صالحة','Données invalides'],sure:['هل أنت متأكد؟','Êtes-vous sûr ?'],hasb:['لا يمكن الحذف: توجد حجوزات','Suppression impossible : réservations liées'],
-active_now:['كراءات جارية','Locations en cours'],mi:['مداخيل الشهر','Revenus du mois'],me:['مصاريف الشهر','Dépenses du mois'],mp:['ربح الشهر','Bénéfice du mois'],alerts:['تنبيهات','Alertes'],none:['لا شيء','Rien'],expired:['منتهية/قريبة','expire bientôt'],
-income:['المداخيل','Revenus'],profit:['الربح','Bénéfice'],due:['المتبقي','Reste dû'],tot:['المجموع','Total'],csv:['تصدير Excel','Export Excel'],from:['من تاريخ','Du'],to:['إلى تاريخ','Au'],
-pin:['رمز PIN','Code PIN'],unlock:['فتح','Ouvrir'],wrong:['رمز خاطئ','Code erroné'],setpin:['اختر رمز PIN (4 أرقام على الأقل)','Choisissez un PIN (4 chiffres min.)'],lockn:['قفل الآن','Verrouiller'],agency:['اسم الوكالة','Nom de l’agence'],lang:['Français','العربية'],bio:['تفعيل البصمة','Activer l’empreinte'],bioL:['بصمة','Empreinte'],tpl:['نموذج العقد (قابل للتعديل)','Modèle de contrat (modifiable)'],reset:['استرجاع النموذج الافتراضي','Modèle par défaut'],bk:['نسخة احتياطية مشفرة','Sauvegarde chiffrée'],rs:['استرجاع نسخة','Restaurer'],pw:['كلمة سر النسخة','Mot de passe'],ok:['تم','Fait'],fail:['فشل','Échec'],fl:['مستوى الوقود','Niveau carburant'],ph:['صور','Photos'],sg:['التوقيع','Signature'],clr:['مسح','Effacer'],legal:['⚠ نموذج عام: يجب مراجعته من محامٍ قبل الاعتماد.','⚠ Modèle général : à faire valider par un avocat.'],data:['البيانات محفوظة محلياً على هذا الجهاز فقط ولا تُرسل لأي خادم.','Données stockées uniquement sur cet appareil, jamais envoyées à un serveur.']};
-let L='ar',V='dash',DB,Q={},unlocked=false;
-const t=k=>(T[k]||[k,k])[L==='ar'?0:1];
-const today=()=>new Date().toISOString().slice(0,10);
-const mon=()=>today().slice(0,8);
-const nm=(c,id)=>(DB[c].find(x=>x.id===id)||{}).name||'—';
-const mad=n=>(+n||0).toLocaleString(L==='ar'?'ar-MA':'fr-MA')+' MAD';
-const DEF={ar:`عقد كراء سيارة\n\nبين الموقعين أسفله:\n1) الوكالة: {{agency}} (المؤجِّر)\n2) الزبون: {{client}} — ب.و.ت: {{cin}} — رخصة السياقة: {{license}} — الهاتف: {{phone}} (المستأجِر)\n\nالمادة 1 – الموضوع: كراء السيارة {{car}} ذات الترقيم {{plate}} (العداد عند التسليم: {{km}} كلم).\nالمادة 2 – المدة: من {{start}} إلى {{end}} أي {{days}} يوم.\nالمادة 3 – الثمن: {{price}} درهم لليوم، المجموع {{total}} درهم، الضمان {{deposit}} درهم.\nالمادة 4 – التزامات المستأجر: استعمال السيارة بعناية، عدم إعارتها للغير، احترام قانون السير، وإرجاعها في الحالة المسلَّمة.\nالمادة 5 – المخالفات والحوادث: يتحمل المستأجر الغرامات والمخالفات خلال مدة الكراء، ويُبلغ المؤجر فوراً بأي حادث.\nالمادة 6 – التأخير: كل يوم تأخير يُحتسب بثمن يوم إضافي.\nالمادة 7 – الاختصاص: المحاكم المختصة بالمملكة المغربية.\n\nحُرر بتاريخ {{today}}.\n\nتوقيع المؤجر: ..............        توقيع المستأجر (قرئ وصودق عليه): ..............\n\n⚠ نموذج عام يجب مراجعته من طرف محامٍ قبل الاعتماد.`,
-fr:`CONTRAT DE LOCATION DE VÉHICULE\n\nEntre :\n1) L’agence : {{agency}} (le loueur)\n2) Le client : {{client}} — CIN : {{cin}} — Permis : {{license}} — Tél : {{phone}} (le locataire)\n\nArt. 1 – Objet : location du véhicule {{car}}, immatriculé {{plate}} (kilométrage départ : {{km}} km).\nArt. 2 – Durée : du {{start}} au {{end}}, soit {{days}} jour(s).\nArt. 3 – Prix : {{price}} MAD/jour, total {{total}} MAD, caution {{deposit}} MAD.\nArt. 4 – Obligations : usage soigneux, interdiction de prêter le véhicule, respect du code de la route, restitution en l’état.\nArt. 5 – Infractions et accidents : amendes à la charge du locataire ; tout accident doit être signalé immédiatement.\nArt. 6 – Retard : chaque jour de retard est facturé au tarif journalier.\nArt. 7 – Juridiction : tribunaux compétents du Royaume du Maroc.\n\nFait le {{today}}.\n\nLe loueur : ..............        Le locataire (lu et approuvé) : ..............\n\n⚠ Modèle général à faire valider par un avocat.`};
-const S={cars:[['name','text'],['plate','text'],['year','number'],['price','number'],['km','number'],['fuel','select',['diesel','essence']]],
-clients:[['name','text'],['cin','text'],['phone','tel'],['license','text'],['address','text']],
-bookings:[['car','ref','cars'],['client','ref','clients'],['start','date'],['end','date'],['price','number'],['deposit','number'],['paid','number'],['status','select',['reserved','active','done','cancelled']]],
-expenses:[['car','ref','cars'],['date','date'],['cat','select',['carb','repair','wash','other']],['amount','number'],['note','text']],
-docs:[['car','ref','cars'],['type','select',['insurance','technical','maintenance']],['date','date'],['expiry','date'],['cost','number'],['note','text']]};
-const TT={cars:r=>r.name,clients:r=>r.name,bookings:r=>nm('cars',r.car)+' ← '+nm('clients',r.client),expenses:r=>t(r.cat)+' — '+mad(r.amount),docs:r=>t(r.type)+' — '+nm('cars',r.car)};
-const SB={cars:r=>`${r.plate||''} · ${mad(r.price)}/${L==='ar'?'يوم':'j'} · ${r.km||0} km`,clients:r=>`${r.cin||''} · ${r.phone||''}`,bookings:r=>`${r.start} → ${r.end} · ${mad(total(r))} (${t('paid')} ${mad(r.paid)}) · ${t(r.status)}`,expenses:r=>`${nm('cars',r.car)} · ${r.date} · ${r.note||''}`,docs:r=>`${r.date||''} → ${t('expiry')}: ${r.expiry||'—'} · ${mad(r.cost)}`};
-/* storage */
-const idb=()=>new Promise((ok,ko)=>{const q=indexedDB.open('cmm',1);q.onupgradeneeded=()=>q.result.createObjectStore('kv');q.onsuccess=()=>ok(q.result);q.onerror=ko;});
-async function load(){const d=await idb();return new Promise(ok=>{const g=d.transaction('kv').objectStore('kv').get('db');g.onsuccess=()=>ok(g.result);});}
-async function save(){const d=await idb();return new Promise(ok=>{const x=d.transaction('kv','readwrite');x.objectStore('kv').put(DB,'db');x.oncomplete=ok;});}
-/* views */
-function render(){document.documentElement.lang=L;document.documentElement.dir=L==='ar'?'rtl':'ltr';
-$('#nav').innerHTML=Object.keys(VIEW).map(n=>`<a class="${n===V?'on':''}" onclick="V='${n}';render()">${t(n)}</a>`).join('');$('#main').innerHTML=VIEW[V]();}
-const list=e=>`<button class="b" onclick="form('${e}')">+ ${t('add')}</button>`+[...DB[e]].sort((a,b)=>(b.start||b.date||'').localeCompare(a.start||a.date||'')).map(r=>`<div class="card"><b>${esc(TT[e](r))}</b><small>${esc(SB[e](r))}</small><div class="ac">${e==='bookings'?`<button onclick="showContract('${r.id}')">📄 ${t('contract')}</button><button onclick="ho('${r.id}','out')">${r.out?'✅ ':''}${t('out')}</button><button onclick="ho('${r.id}','in')">${r.in?'✅ ':''}${t('in')}</button>`:''}<button onclick="form('${e}','${r.id}')">${t('edit')}</button><button class="d" onclick="del('${e}','${r.id}')">${t('del')}</button></div></div>`).join('');
-function range(){Q.f=Q.f||mon()+'01';Q.t=Q.t||today().slice(0,8)+'31';return[Q.f,Q.t];}
-const VIEW={dash(){const m=mon(),f=m+'01',to=m+'31';let inc=0,ex=0;DB.cars.forEach(c=>{const s=carStats(DB,c.id,f,to);inc+=s.income;ex+=s.exp;});
- const act=DB.bookings.filter(b=>b.status!=='cancelled'&&inR(today(),b.start,b.end));const lim=new Date(Date.now()+30*864e5).toISOString().slice(0,10);
- const al=DB.docs.filter(d=>d.expiry&&d.expiry<=lim);
- return`<div class="g"><div class="k"><b>${act.length}</b><span>${t('active_now')}</span></div><div class="k"><b>${mad(inc)}</b><span>${t('mi')}</span></div><div class="k"><b>${mad(ex)}</b><span>${t('me')}</span></div><div class="k"><b>${mad(inc-ex)}</b><span>${t('mp')}</span></div></div>
- <div class="card"><b>⚠ ${t('alerts')}</b>${al.map(d=>`<small class="${d.expiry<today()?'warn':''}">${t(d.type)} — ${esc(nm('cars',d.car))}: ${d.expiry}</small>`).join('')||`<small>${t('none')}</small>`}</div>
- <div class="card"><b>${t('active_now')}</b>${act.map(b=>`<small>${esc(nm('cars',b.car))} ← ${esc(nm('clients',b.client))} · ${t('end')} ${b.end}</small>`).join('')||`<small>${t('none')}</small>`}</div><small>🔒 ${t('data')}</small>`;},
-cars:()=>list('cars'),clients:()=>list('clients'),bookings:()=>list('bookings'),expenses:()=>list('expenses'),docs:()=>list('docs'),
-reports(){const[f,to]=range();const rows=DB.cars.map(c=>({c,...carStats(DB,c.id,f,to)}));const sum=k=>rows.reduce((s,r)=>s+r[k],0);
- return`<div class="card"><label>${t('from')}<input type="date" value="${f}" onchange="Q.f=this.value;render()"></label><label>${t('to')}<input type="date" value="${to}" onchange="Q.t=this.value;render()"></label><button class="b" onclick="csv()">${t('csv')}</button><button onclick="showDoc(repHtml())">${t('print')}</button></div><div class="card" style="overflow:auto">${repHtml()}</div>`;},
-settings(){return`<div class="card"><label>${t('agency')}<input value="${esc(DB.set.agency||'')}" onchange="DB.set.agency=this.value;save()"></label><button onclick="L=L==='ar'?'fr':'ar';DB.set.lang=L;save();render()">${t('lang')}</button><button onclick="doLock()">🔒 ${t('lockn')}</button><button onclick="bioOn()">${t('bio')}</button><button onclick="setPin()">${t('pin')}</button></div>
-<div class="card"><b>${t('bk')}</b><button class="b" onclick="backup()">⬇ ${t('bk')}</button><label>${t('rs')}<input type="file" id="rf" onchange="restore(this.files[0])"></label></div>
-<div class="card"><b>${t('tpl')}</b><textarea rows="12" onchange="DB.set['tpl_'+L]=this.value;save()">${esc(DB.set['tpl_'+L]||DEF[L])}</textarea><button onclick="delete DB.set['tpl_'+L];save();render()">${t('reset')}</button><small>${t('legal')}</small></div>`;}};
-function repHtml(){const[f,to]=range();const rows=DB.cars.map(c=>({c,...carStats(DB,c.id,f,to)}));const s=k=>rows.reduce((a,r)=>a+r[k],0);
- return`<h3>${t('reports')} ${esc(DB.set.agency||'')} (${f} → ${to})</h3><table><tr><th>${t('car')}</th><th>${t('income')}</th><th>${t('due')}</th><th>${t('expenses')}</th><th>${t('profit')}</th></tr>${rows.map(r=>`<tr><td>${esc(r.c.name)} ${esc(r.c.plate)}</td><td>${mad(r.income)}</td><td>${mad(r.due)}</td><td>${mad(r.exp)}</td><td>${mad(r.profit)}</td></tr>`).join('')}<tr><th>${t('tot')}</th><th>${mad(s('income'))}</th><th>${mad(s('due'))}</th><th>${mad(s('exp'))}</th><th>${mad(s('profit'))}</th></tr></table>`;}
-function dl(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),5000);}
-function csv(){const[f,to]=range();const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';const r=[[t('car'),t('plate'),t('income'),t('due'),t('expenses'),t('profit')]];DB.cars.forEach(c=>{const s=carStats(DB,c.id,f,to);r.push([c.name,c.plate,s.income,s.due,s.exp,s.profit]);});
- r.push([]);r.push([t('bookings')]);DB.bookings.filter(b=>inR(b.start,f,to)).forEach(b=>r.push([nm('cars',b.car),nm('clients',b.client),b.start,b.end,total(b),b.paid,b.status]));
- dl(new Blob(['\ufeff'+r.map(x=>x.map(q).join(',')).join('\n')],{type:'text/csv;charset=utf-8'}),`rapport_${f}_${to}.csv`);}
-/* forms */
-function form(e,id){const r=id?DB[e].find(x=>x.id===id):{status:'reserved',date:today(),start:today(),end:today()};
- $('#modal').innerHTML=`<div class="box"><h3>${t(id?'edit':'add')}</h3>`+S[e].map(([k,ty,o])=>{const v=r[k]??'';let i;
- if(ty==='ref')i=`<select id="f_${k}">${DB[o].map(x=>`<option value="${x.id}" ${x.id===v?'selected':''}>${esc(x.name)}</option>`).join('')}</select>`;
- else if(ty==='select')i=`<select id="f_${k}">${o.map(x=>`<option value="${x}" ${x===v?'selected':''}>${t(x)}</option>`).join('')}</select>`;
- else i=`<input id="f_${k}" type="${ty}" value="${esc(v)}" ${ty==='number'?'step="any" inputmode="decimal"':''}>`;return`<label>${t(k)}${i}</label>`;}).join('')+`<button class="b" onclick="saveForm('${e}','${id||''}')">${t('save')}</button><button onclick="closeM()">${t('cancel')}</button></div>`;
- $('#modal').style.display='flex';
- if(e==='bookings'){const sync=()=>{const c=DB.cars.find(x=>x.id===$('#f_car').value);if(c)$('#f_price').value=c.price;};$('#f_car').onchange=sync;if(!id)sync();}}
-const closeM=()=>$('#modal').style.display='none';
-async function saveForm(e,id){const o={};S[e].forEach(([k,ty])=>{const v=$('#f_'+k).value;o[k]=ty==='number'?(v===''?0:+v):v.trim();});
- const first=S[e][0][0];if(!o[first]){alert(t('bad'));return;}
- if(e==='bookings'){if(!o.car||!o.client||!o.start||!o.end||o.end<o.start||o.price<0){alert(t('bad'));return;}const c=conflict(DB,{...o,id});if(c){alert(t('conflict')+'\n'+c.start+' → '+c.end);return;}}
- if(e==='expenses'&&(!o.car||!o.date||o.amount<=0)){alert(t('bad'));return;}
- if(e==='docs'&&!o.car){alert(t('bad'));return;}
- if(id)Object.assign(DB[e].find(x=>x.id===id),o);else DB[e].push({id:uid(),...o});await save();closeM();render();}
-async function del(e,id){if(e==='cars'&&DB.bookings.some(b=>b.car===id))return alert(t('hasb'));if(e==='clients'&&DB.bookings.some(b=>b.client===id))return alert(t('hasb'));if(!confirm(t('sure')))return;DB[e]=DB[e].filter(x=>x.id!==id);await save();render();}
-/* print: contract + PV */
-function showDoc(h){$('#print').innerHTML=`<div class="noprint"><button class="b" onclick="window.print()">🖨 ${t('print')}</button><button onclick="$('#print').style.display='none'">${t('close')}</button><small>✏ ${L==='ar'?'يمكن تعديل النص مباشرة قبل الطباعة':'Texte modifiable avant impression'}</small></div><div class="doc" contenteditable="true">${h}</div>`;$('#print').style.display='block';}
-function showContract(id){const b=DB.bookings.find(x=>x.id===id),c=DB.cars.find(x=>x.id===b.car),k=DB.clients.find(x=>x.id===b.client)||{};
- const m={agency:DB.set.agency||'',client:k.name,cin:k.cin,license:k.license,phone:k.phone,car:c.name,plate:c.plate,start:b.start,end:b.end,days:days(b.start,b.end),price:b.price,total:total(b),deposit:b.deposit,km:c.km,today:today()};
- showDoc((DB.set['tpl_'+L]||DEF[L]).split(/\{\{(\w+)\}\}/).map((p,i)=>i%2?esc(m[p]??''):esc(p)).join(''));}
-function ho(id,kind){const b=DB.bookings.find(x=>x.id===id),c=DB.cars.find(x=>x.id===b.car),r=b[kind];
- if(r&&confirm(L==='ar'?'المحضر موجود. عرضه؟ (إلغاء = تعديله)':'PV existant. Afficher ? (Annuler = refaire)'))return showPV(b,kind);
- window._p=[];window._sig='';
- $('#modal').innerHTML=`<div class="box"><h3>${t(kind)} — ${esc(c.name)}</h3><label>${t('km')}<input id="h_km" type="number" value="${kind==='out'?c.km:(b.out?b.out.km:c.km)}"></label><label>${t('fl')}<select id="h_fl"><option>1/4</option><option>1/2</option><option>3/4</option><option selected>4/4</option></select></label><label>${t('note')}<textarea id="h_n" rows="3"></textarea></label><label>${t('ph')}<input type="file" accept="image/*" multiple onchange="photos(this.files)"></label><div id="h_ph" class="ph"></div><label>${t('sg')}</label><canvas id="sg"></canvas><button onclick="sigClr()">${t('clr')}</button><br><button class="b" onclick="saveHO('${id}','${kind}')">${t('save')}</button><button onclick="closeM()">${t('cancel')}</button></div>`;$('#modal').style.display='flex';sigInit();}
-async function photos(fs){for(const f of fs){const im=await createImageBitmap(f),s=Math.min(1,900/im.width),c=document.createElement('canvas');c.width=im.width*s;c.height=im.height*s;c.getContext('2d').drawImage(im,0,0,c.width,c.height);_p.push(c.toDataURL('image/jpeg',.6));}$('#h_ph').innerHTML=_p.map(p=>`<img src="${p}">`).join('');}
-function sigInit(){const c=$('#sg');c.width=c.offsetWidth*2;c.height=280;const x=c.getContext('2d');x.lineWidth=4;x.lineCap='round';let d=0;const p=e=>{const r=c.getBoundingClientRect();return[(e.clientX-r.left)*2,(e.clientY-r.top)*2];};
- c.onpointerdown=e=>{d=1;x.beginPath();x.moveTo(...p(e));c.setPointerCapture(e.pointerId);};c.onpointermove=e=>{if(d){x.lineTo(...p(e));x.stroke();_sig=1;}};c.onpointerup=()=>d=0;}
-function sigClr(){const c=$('#sg');c.getContext('2d').clearRect(0,0,c.width,c.height);_sig='';}
-async function saveHO(id,kind){const b=DB.bookings.find(x=>x.id===id);b[kind]={date:new Date().toISOString(),km:+$('#h_km').value||0,fuel:$('#h_fl').value,note:$('#h_n').value,photos:_p,sig:_sig?$('#sg').toDataURL():''};
- const c=DB.cars.find(x=>x.id===b.car);if(kind==='out'){b.status='active';}else{b.status='done';}if(b[kind].km>c.km)c.km=b[kind].km;await save();closeM();render();showPV(b,kind);}
-function showPV(b,kind){const r=b[kind],c=DB.cars.find(x=>x.id===b.car),k=DB.clients.find(x=>x.id===b.client)||{};
- showDoc(`<h3>${t(kind)} — ${esc(DB.set.agency||'')}</h3><table><tr><td>${t('car')}</td><td>${esc(c.name)} ${esc(c.plate)}</td></tr><tr><td>${t('client')}</td><td>${esc(k.name)} (${esc(k.cin)})</td></tr><tr><td>${t('date')}</td><td>${r.date.slice(0,16).replace('T',' ')}</td></tr><tr><td>${t('km')}</td><td>${r.km}</td></tr><tr><td>${t('fl')}</td><td>${r.fuel}</td></tr><tr><td>${t('note')}</td><td>${esc(r.note)}</td></tr></table><div>${r.photos.map(p=>`<img src="${p}" style="width:45%;margin:2%">`).join('')}</div><p>${t('sg')}:</p>${r.sig?`<img src="${r.sig}" style="width:240px;border:1px solid #999">`:''}`);}
-/* security */
-function lockUI(first){const l=$('#lock');l.innerHTML=`<div class="box" style="text-align:center"><h3>🚗 Car Manager Maroc</h3><p>${first?t('setpin'):t('pin')}</p><input id="pn" type="password" inputmode="numeric" autocomplete="off" style="text-align:center;font-size:22px"><button class="b" onclick="${first?'firstPin()':'tryPin()'}">${t(first?'save':'unlock')}</button>${!first&&DB.set.bio?`<button onclick="bioLogin()">👆 ${t('bioL')}</button>`:''}<p><button onclick="L=L==='ar'?'fr':'ar';lockUI(${first})">${t('lang')}</button></p></div>`;l.style.display='flex';$('#pn').focus();$('#pn').onkeydown=e=>e.key==='Enter'&&(first?firstPin():tryPin());}
-async function setPinVal(p){const s=hex(crypto.getRandomValues(new Uint8Array(8)));DB.set.salt=s;DB.set.pin=await hashPin(p,s);await save();}
-async function firstPin(){const p=$('#pn').value;if(!/^\d{4,}$/.test(p))return alert(t('bad'));await setPinVal(p);unlock();}
-async function setPin(){const p=prompt(t('setpin'));if(p===null)return;if(!/^\d{4,}$/.test(p))return alert(t('bad'));await setPinVal(p);alert(t('ok'));}
-async function tryPin(){if(await hashPin($('#pn').value,DB.set.salt)===DB.set.pin)unlock();else{alert(t('wrong'));$('#pn').value='';}}
-function unlock(){unlocked=true;$('#lock').style.display='none';L=DB.set.lang||L;render();}
-function doLock(){unlocked=false;lockUI(false);}
-const rnd=()=>crypto.getRandomValues(new Uint8Array(32));
-async function bioOn(){try{const c=await navigator.credentials.create({publicKey:{challenge:rnd(),rp:{name:'Car Manager Maroc'},user:{id:rnd().slice(0,16),name:'owner',displayName:'owner'},pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required'}}});DB.set.bio=[...new Uint8Array(c.rawId)];await save();alert(t('ok'));}catch(e){alert(t('fail'));}}
-async function bioLogin(){try{await navigator.credentials.get({publicKey:{challenge:rnd(),allowCredentials:[{type:'public-key',id:new Uint8Array(DB.set.bio)}],userVerification:'required'}});unlock();}catch(e){alert(t('fail'));}}
-async function backup(){const pw=prompt(t('pw'));if(!pw)return;dl(new Blob([await enc(DB,pw)]),`carmanager_${today()}.cmm`);}
-async function restore(f){if(!f)return;const pw=prompt(t('pw'));if(!pw)return;try{const d=await dec(await f.arrayBuffer(),pw);if(!confirm(t('sure')))return;DB=d;await save();alert(t('ok'));render();}catch(e){alert(t('fail'));}}
-let hid=0;document.addEventListener('visibilitychange',()=>{if(document.hidden)hid=Date.now();else if(unlocked&&Date.now()-hid>60000)doLock();});
-(async()=>{DB=(await load())||{cars:[],clients:[],bookings:[],expenses:[],docs:[],set:{}};L=DB.set.lang||'ar';navigator.storage&&navigator.storage.persist&&navigator.storage.persist();
- if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});lockUI(!DB.set.pin);})();
-</script></body></html>
+```html
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Car Manager Maroc | نظام إدارة كراء السيارات</title>
+
+  <!-- Fonts: Cairo (Arabic) & Inter (French/Latin) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            arabic: ['Cairo', 'sans-serif'],
+            latin: ['Inter', 'sans-serif'],
+          }
+        }
+      }
+    };
+  </script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    html[dir="rtl"] body { font-family: 'Cairo', 'Inter', sans-serif; }
+    html[dir="ltr"] body { font-family: 'Inter', 'Cairo', sans-serif; }
+
+    .sig-pad {
+      touch-action: none;
+      background-image: radial-gradient(#cbd5e1 1px, transparent 1px);
+      background-size: 14px 14px;
+    }
+
+    .ma-plate {
+      font-family: 'Inter', monospace;
+      letter-spacing: 0.04em;
+      border: 2px solid #1e293b;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+      box-shadow: inset 0 0 0 1px #cbd5e1;
+    }
+
+    @media print {
+      body * { visibility: hidden !important; }
+      #print-area, #print-area * { visibility: visible !important; }
+      #print-area {
+        position: fixed !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: 100% !important;
+        background: #ffffff !important;
+        color: #000000 !important;
+        padding: 12mm !important;
+        margin: 0 !important;
+        z-index: 99999 !important;
+      }
+      .no-print { display: none !important; }
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased selection:bg-emerald-500 selection:text-white">
+
+  <!-- PIN Lock Screen -->
+  <div id="lock-screen" class="fixed inset-0 z-50 bg-slate-900 flex flex-col items-center justify-center p-4">
+    <div class="w-full max-w-sm bg-slate-800/95 border border-slate-700 rounded-3xl p-6 sm:p-8 shadow-2xl text-center text-white">
+      <div class="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg">
+        <i data-lucide="car-front" class="w-9 h-9 text-white"></i>
+      </div>
+      <h1 class="text-xl font-bold">Car Manager Maroc</h1>
+      <p class="text-slate-400 text-xs mt-1 mb-6">تخزين محلي 100% بدون خادم خارجي • Stockage 100% Local</p>
+
+      <div class="flex justify-center gap-3 mb-6" dir="ltr">
+        <span class="pin-dot w-4 h-4 rounded-full border-2 border-emerald-400 transition-all"></span>
+        <span class="pin-dot w-4 h-4 rounded-full border-2 border-emerald-400 transition-all"></span>
+        <span class="pin-dot w-4 h-4 rounded-full border-2 border-emerald-400 transition-all"></span>
+        <span class="pin-dot w-4 h-4 rounded-full border-2 border-emerald-400 transition-all"></span>
+      </div>
+      <p id="lock-error" class="text-rose-400 text-xs h-4 mb-2 font-medium"></p>
+
+      <div class="grid grid-cols-3 gap-3 max-w-[260px] mx-auto mb-5" dir="ltr">
+        <button type="button" onclick="app.enterPinDigit('1')" class="h-14 rounded-2xl bg-slate-700/70 hover:bg-slate-600 active:scale-95 text-xl font-semibold">1</button>
+        <button type="button" onclick="app.enterPinDigit('2')" class="h-14 rounded-2xl bg-slate-700/70 hover:bg-slate-600 active:scale-95 text-xl font-semibold">2</button>
+        <button type="button" onclick="app.enterPinDigit('3')" class="h-14 rounded-2xl bg-slate-700/70 hover:bg-slate-600 active:scale-95 text-xl font-semibold">3</button>
+        <button type="button" onclick="app.enterPinDigit('4')" class="h-14 rounded-2xl bg-slate-700/70 hover:bg-slate-600 active:scale-95 text-xl font-semibold">4</button>
+        <button type="button" onclick="app.enterPinDigit('5')" class="h-14 rounded-2xl bg-slate-700/70 hover:bg-slate-600 active:scale-95 text-xl font-semibold">5</button>
+        <button type="button" onclick="app.enterPinDigit('6')" class="h-14 rounded-2xl bg-slate-700/70 hover:bg-slate-600 active:scale-95 text-xl font-semibold">6</button>
+        <button type="button" onclick="app.enterPinDigit('7')" class="h-14 rounded-2xl bg-slate-700/70 hover:bg-slate-600 active:scale-95 text-xl font-semibold">7</button>
+        <button type="button" onclick="app.enterPinDigit('8')" class="h-14 rounded-2xl bg-slate-700/70 hover:bg-slate-600 active:scale-95 text-xl font-semibold">8</button>
+        <button type="button" onclick="app.enterPinDigit('9')" class="h-14 rounded-2xl bg-slate-700/70 hover:bg-slate-600 active:scale-95 text-xl font-semibold">9</button>
+        <button type="button" onclick="app.triggerBiometricUnlock()" title="Biometric" class="h-14 rounded-2xl bg-emerald-600/20 border border-emerald-500/40 hover:bg-emerald-600/30 active:scale-95 flex items-center justify-center text-emerald-400">
+          <i data-lucide="fingerprint" class="w-6 h-6"></i>
+        </button>
+        <button type="button" onclick="app.enterPinDigit('0')" class="h-14 rounded-2xl bg-slate-700/70 hover:bg-slate-600 active:scale-95 text-xl font-semibold">0</button>
+        <button type="button" onclick="app.clearPinInput()" class="h-14 rounded-2xl bg-slate-700/40 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 active:scale-95 flex items-center justify-center">
+          <i data-lucide="delete" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="flex items-center justify-between text-[11px] text-slate-400 border-t border-slate-700/80 pt-3">
+        <span>PIN: <strong class="text-emerald-400">1234</strong></span>
+        <button type="button" onclick="app.toggleLanguage()" class="px-2.5 py-1 rounded-lg bg-slate-700 text-slate-200 hover:bg-slate-600 font-semibold">AR / FR</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="fixed top-4 inset-x-4 sm:inset-x-auto sm:end-5 z-[60] flex flex-col gap-2 pointer-events-none"></div>
+
+  <!-- Main App Shell -->
+  <div id="app-shell" class="hidden min-h-screen flex flex-col lg:flex-row">
+    <aside class="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 bg-slate-900 text-white border-e border-slate-800 z-30">
+      <div class="p-5 flex items-center gap-3 border-b border-slate-800">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shrink-0">
+          <i data-lucide="car" class="w-6 h-6 text-white"></i>
+        </div>
+        <div class="overflow-hidden">
+          <h2 id="sidebar-agency-name" class="font-bold text-sm truncate">Car Manager Maroc</h2>
+          <p class="text-[11px] text-emerald-400 flex items-center gap-1">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span>
+            <span data-i18n="offlineReady">تخزين محلي آمن</span>
+          </p>
+        </div>
+      </div>
+
+      <nav id="desktop-nav" class="flex-1 p-3 space-y-1 overflow-y-auto"></nav>
+
+      <div class="p-4 border-t border-slate-800 space-y-2">
+        <button type="button" onclick="app.toggleLanguage()" class="w-full py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold flex items-center justify-between">
+          <span class="flex items-center gap-2"><i data-lucide="languages" class="w-4 h-4 text-emerald-400"></i> <span data-i18n="switchLang">Français</span></span>
+          <span id="lang-badge-desktop" class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">AR</span>
+        </button>
+        <button type="button" onclick="app.lockApp()" class="w-full py-2 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-xs font-semibold flex items-center gap-2">
+          <i data-lucide="lock" class="w-4 h-4"></i>
+          <span data-i18n="lockApp">قفل التطبيق</span>
+        </button>
+      </div>
+    </aside>
+
+    <div class="flex-1 lg:ps-64 flex flex-col min-h-screen pb-20 lg:pb-6">
+      <header class="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <div class="lg:hidden w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center">
+            <i data-lucide="car" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h1 id="page-title" class="text-base sm:text-lg font-bold text-slate-900">لوحة التحكم</h1>
+            <p id="header-date" class="text-[11px] text-slate-500"></p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button type="button" onclick="app.openReservationModal()" class="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-semibold flex items-center gap-1.5 shadow-sm">
+            <i data-lucide="plus-circle" class="w-4 h-4"></i>
+            <span class="hidden sm:inline" data-i18n="newBooking">حجز جديد</span>
+          </button>
+          <button type="button" onclick="app.toggleLanguage()" class="px-2.5 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-bold text-slate-700">
+            <span id="lang-badge-top">FR</span>
+          </button>
+          <button type="button" onclick="app.lockApp()" class="lg:hidden p-2 rounded-xl border border-slate-200 bg-slate-50 text-slate-700 hover:bg-rose-50 hover:text-rose-600">
+            <i data-lucide="lock" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </header>
+
+      <main id="main-view" class="flex-1 p-4 sm:p-6 max-w-7xl w-full mx-auto space-y-6"></main>
+    </div>
+
+    <nav id="mobile-nav" class="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t border-slate-200 grid grid-cols-6 py-1.5 px-1 shadow-lg"></nav>
+  </div>
+
+  <!-- Modal -->
+  <div id="modal-backdrop" class="fixed inset-0 z-50 bg-slate-900/60 hidden items-center justify-center p-3 sm:p-5 overflow-y-auto">
+    <div class="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col overflow-hidden border border-slate-200 my-auto">
+      <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
+        <h3 id="modal-title" class="font-bold text-base sm:text-lg text-slate-900">Modal</h3>
+        <button type="button" onclick="app.closeModal()" class="p-2 rounded-xl hover:bg-slate-200/70 text-slate-500">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+      <div id="modal-body" class="p-5 overflow-y-auto flex-1 space-y-4"></div>
+    </div>
+  </div>
+
+  <!-- Print Area -->
+  <div id="print-area" class="hidden"></div>
+
+  <script>
+    const I18N = {
+      ar: {
+        offlineReady: 'تخزين محلي آمن 100%',
+        switchLang: 'Français',
+        lockApp: 'قفل التطبيق',
+        newBooking: 'حجز جديد',
+        nav_dashboard: 'لوحة التحكم',
+        nav_fleet: 'السيارات',
+        nav_reservations: 'الحجوزات',
+        nav_customers: 'الزبائن',
+        nav_finance: 'المالية والأرباح',
+        nav_reports: 'التقارير وPDF',
+        nav_settings: 'الإعدادات والأمان',
+        kpi_revenue: 'إجمالي المداخيل',
+        kpi_expenses: 'إجمالي المصاريف',
+        kpi_profit: 'صافي الأرباح',
+        kpi_active: 'الحجوزات الجارية',
+        kpi_utilization: 'نسبة استغلال الأسطول',
+        alerts_title: 'تنبيهات عاجلة (التأمين، الفحص التقني، الصيانة والاسترجاع)',
+        no_alerts: 'جميع السيارات والوثائق في وضعية قانونية سليمة حالياً.',
+        chart_per_car: 'صافي الربح لكل سيارة (MAD)',
+        add_vehicle: 'إضافة سيارة جديدة',
+        edit_vehicle: 'تعديل بيانات السيارة',
+        plate: 'رقم اللوحة (الترقيم)',
+        model: 'الماركة والموديل',
+        year: 'سنة الصنع',
+        fuel: 'الوقود',
+        daily_rate: 'السعر اليومي (MAD)',
+        mileage: 'العداد الحالي (كلم)',
+        status: 'الحالة',
+        status_available: 'متاحة',
+        status_rented: 'مكراة حالياً',
+        status_maintenance: 'في الصيانة',
+        insurance_exp: 'انتهاء التأمين',
+        visite_exp: 'انتهاء الفحص التقني',
+        vidange_next: 'تغيير الزيت القادم (كلم)',
+        valid: 'ساري',
+        expiring_soon: 'قرب الانتهاء',
+        expired: 'منتهي!',
+        add_customer: 'إضافة زبون جديد',
+        full_name: 'الاسم الكامل',
+        cin_passport: 'رقم البطاقة الوطنية (CIN) / الجواز',
+        license_no: 'رقم رخصة السياقة',
+        phone: 'رقم الهاتف',
+        address: 'العنوان / المدينة',
+        notes: 'ملاحظات',
+        vip_flag: 'زبون مميز (VIP)',
+        blacklist_flag: 'قائمة سوداء (تحذير)',
+        conflict_error: 'تضارب في الحجز! هذه السيارة محجوزة بالفعل في نفس الفترة:',
+        pickup_date: 'تاريخ ووقت التسليم',
+        return_date: 'تاريخ ووقت الاسترجاع',
+        days_count: 'عدد الأيام',
+        extras_mad: 'إضافات (MAD)',
+        discount_mad: 'تخفيض (MAD)',
+        deposit_mad: 'مبلغ الضمان (Caution)',
+        paid_mad: 'المبلغ المؤدى (MAD)',
+        total_mad: 'المجموع الإجمالي',
+        balance_mad: 'الباقي للتحصيل',
+        contract_btn: 'عقد كراء PDF',
+        inspect_btn: 'محضر التسليم/الاسترجاع',
+        save: 'حفظ البيانات',
+        cancel: 'إلغاء',
+        edit: 'تعديل',
+        print_pdf: 'طباعة / حفظ PDF',
+        export_excel: 'تصدير Excel (CSV)',
+        backup_export: 'تصدير نسخة مشفرة (.enc)',
+        backup_import: 'استعادة نسخة مشفرة',
+        run_tests: 'تشغيل الاختبار الذاتي'
+      },
+      fr: {
+        offlineReady: 'Stockage 100% Local & Sécurisé',
+        switchLang: 'العربية',
+        lockApp: 'Verrouiller',
+        newBooking: 'Nouvelle Réservation',
+        nav_dashboard: 'Tableau de bord',
+        nav_fleet: 'Flotte Véhicules',
+        nav_reservations: 'Réservations',
+        nav_customers: 'Clients',
+        nav_finance: 'Finances & Profits',
+        nav_reports: 'Rapports & PDF',
+        nav_settings: 'Paramètres & Sécurité',
+        kpi_revenue: 'Revenus Totaux',
+        kpi_expenses: 'Dépenses Totales',
+        kpi_profit: 'Bénéfice Net',
+        kpi_active: 'Locations Actives',
+        kpi_utilization: 'Taux d’occupation',
+        alerts_title: 'Alertes Urgentes (Assurance, Visite Technique, Vidange & Retours)',
+        no_alerts: 'Tous les véhicules et documents sont à jour.',
+        chart_per_car: 'Bénéfice Net par Véhicule (MAD)',
+        add_vehicle: 'Ajouter un véhicule',
+        edit_vehicle: 'Modifier le véhicule',
+        plate: 'Matricule (Maroc)',
+        model: 'Marque & Modèle',
+        year: 'Année',
+        fuel: 'Carburant',
+        daily_rate: 'Tarif Journalier (MAD)',
+        mileage: 'Kilométrage actuel (km)',
+        status: 'Statut',
+        status_available: 'Disponible',
+        status_rented: 'En location',
+        status_maintenance: 'En maintenance',
+        insurance_exp: 'Expiration Assurance',
+        visite_exp: 'Expiration Visite Technique',
+        vidange_next: 'Prochaine Vidange (km)',
+        valid: 'Valide',
+        expiring_soon: 'Expire bientôt',
+        expired: 'Expiré !',
+        add_customer: 'Ajouter un client',
+        full_name: 'Nom complet',
+        cin_passport: 'N° CIN / Passeport',
+        license_no: 'N° Permis de conduire',
+        phone: 'Téléphone',
+        address: 'Adresse / Ville',
+        notes: 'Notes',
+        vip_flag: 'Client VIP',
+        blacklist_flag: 'Liste Noire (Alerte)',
+        conflict_error: 'Conflit de réservation ! Ce véhicule est déjà réservé sur cette période :',
+        pickup_date: 'Date & Heure Départ',
+        return_date: 'Date & Heure Retour',
+        days_count: 'Nombre de jours',
+        extras_mad: 'Suppléments (MAD)',
+        discount_mad: 'Remise (MAD)',
+        deposit_mad: 'Caution (MAD)',
+        paid_mad: 'Montant Payé (MAD)',
+        total_mad: 'Total TTC',
+        balance_mad: 'Reste à payer',
+        contract_btn: 'Contrat PDF',
+        inspect_btn: 'État des lieux',
+        save: 'Enregistrer',
+        cancel: 'Annuler',
+        edit: 'Modifier',
+        print_pdf: 'Imprimer / PDF',
+        export_excel: 'Exporter Excel (CSV)',
+        backup_export: 'Exporter Sauvegarde (.enc)',
+        backup_import: 'Restaurer Sauvegarde',
+        run_tests: 'Auto-Test Système'
+      }
+    };
+
+    class LocalDatabase {
+      constructor(dbName = 'CarManagerMarocDB', version = 1) {
+        this.dbName = dbName;
+        this.version = version;
+        this.db = null;
+      }
+
+      async open() {
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open(this.dbName, this.version);
+          req.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            ['vehicles', 'customers', 'reservations', 'inspections', 'transactions', 'settings'].forEach(store => {
+              if (!db.objectStoreNames.contains(store)) {
+                db.createObjectStore(store, { keyPath: 'id' });
+              }
+            });
+          };
+          req.onsuccess = (e) => { this.db = e.target.result; resolve(this.db); };
+          req.onerror = (e) => reject(e.target.error);
+        });
+      }
+
+      async getAll(storeName) {
+        return new Promise((resolve, reject) => {
+          const tx = this.db.transaction(storeName, 'readonly');
+          const req = tx.objectStore(storeName).getAll();
+          req.onsuccess = () => resolve(req.result || []);
+          req.onerror = () => reject(req.error);
+        });
+      }
+
+      async put(storeName, item) {
+        return new Promise((resolve, reject) => {
+          const tx = this.db.transaction(storeName, 'readwrite');
+          const req = tx.objectStore(storeName).put(item);
+          req.onsuccess = () => resolve(item);
+          req.onerror = () => reject(req.error);
+        });
+      }
+
+      async delete(storeName, id) {
+        return new Promise((resolve, reject) => {
+          const tx = this.db.transaction(storeName, 'readwrite');
+          const req = tx.objectStore(storeName).delete(id);
+          req.onsuccess = () => resolve(true);
+          req.onerror = () => reject(req.error);
+        });
+      }
+
+      async clearStore(storeName) {
+        return new Promise((resolve, reject) => {
+          const tx = this.db.transaction(storeName, 'readwrite');
+          const req = tx.objectStore(storeName).clear();
+          req.onsuccess = () => resolve(true);
+          req.onerror = () => reject(req.error);
+        });
+      }
+    }
+
+    class CryptoBackupEngine {
+      static async deriveKey(password, salt) {
+        const enc = new TextEncoder();
+        const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), { name: 'PBKDF2' }, false, ['deriveKey']);
+        return crypto.subtle.deriveKey(
+          { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+          keyMaterial,
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt']
+        );
+      }
+
+      static async encryptJSON(dataObj, password) {
+        const enc = new TextEncoder();
+        const salt = crypto.getRandomValues(new Uint8Array(16));
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const key = await this.deriveKey(password, salt);
+        const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(JSON.stringify(dataObj)));
+        const toB64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+        return JSON.stringify({
+          app: 'CarManagerMaroc',
+          cipher: 'AES-GCM-256',
+          createdAt: new Date().toISOString(),
+          salt: toB64(salt),
+          iv: toB64(iv),
+          payload: toB64(ciphertext)
+        }, null, 2);
+      }
+
+      static async decryptJSON(encryptedString, password) {
+        const parsed = JSON.parse(encryptedString);
+        const fromB64 = (b64) => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+        const key = await this.deriveKey(password, fromB64(parsed.salt));
+        const decBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(parsed.iv) }, key, fromB64(parsed.payload));
+        return JSON.parse(new TextDecoder().decode(decBuf));
+      }
+    }
+
+    class CarManagerApp {
+      constructor() {
+        this.db = new LocalDatabase();
+        this.lang = 'ar';
+        this.currentTab = 'dashboard';
+        this.pinBuffer = '';
+        this.isUnlocked = false;
+        this._tempPhotos = [];
+        this.state = {
+          vehicles: [],
+          customers: [],
+          reservations: [],
+          inspections: [],
+          transactions: [],
+          settings: {
+            id: 'agency_config',
+            agencyName: 'وكالة الأطلس لكراء السيارات - Atlas Car Maroc',
+            ice: '002489123000045',
+            rc: '45892 / أكادير - إنزكان',
+            patente: '48291044',
+            phone: '+212 6 61 23 45 67',
+            city: 'إنزكان / أكادير - المغرب',
+            pin: '1234',
+            defaultContractClausesAr: `المادة 1: يقر المكتري بأنه تسلم السيارة في حالة ميكانيكية وهيكلية جيدة مع جميع وثائقها القانونية ويلتزم بإرجاعها في الموعد المحدد.\nالمادة 2: يمنع منعاً كلياً كراء السيارة من الباطن أو استعمالها في أغراض غير قانونية أو إخراجها خارج المغرب دون إذن كتابي.\nالمادة 3: يتحمل المكتري جميع المخالفات المرورية والغرامات طيلة مدة الكراء.\nالمادة 4: في حالة حادثة سير، يلتزم المكتري بإشعار الوكالة فوراً وإنجاز محضر معاينة ودية أو محضر رسمي.\nالمادة 5: كل تأخير يتجاوز ساعة واحدة يحتسب كيوم إضافي كامل.`,
+            defaultContractClausesFr: `Article 1 : Le locataire reconnaît avoir reçu le véhicule en bon état avec ses documents et s'engage à le restituer à la date convenue.\nArticle 2 : Interdiction de sous-louer, d'utiliser le véhicule à des fins illicites ou de quitter le Maroc sans accord écrit.\nArticle 3 : Le locataire est responsable des infractions routières durant la location.\nArticle 4 : En cas d'accident, informer immédiatement l'agence et établir un constat amiable ou PV officiel.\nArticle 5 : Tout retard de plus d'une heure est facturé comme journée supplémentaire.`
+          }
+        };
+      }
+
+      async init() {
+        await this.db.open();
+        await this.loadAllData();
+        if (this.state.vehicles.length === 0) {
+          await this.seedMoroccanDemoData();
+          await this.loadAllData();
+        }
+        this.registerPWA();
+        this.updateHeaderDate();
+        this.applyLanguage(this.lang);
+        lucide.createIcons();
+      }
+
+      registerPWA() {
+        try {
+          const manifest = {
+            name: 'Car Manager Maroc',
+            short_name: 'CarManagerMA',
+            start_url: '.',
+            display: 'standalone',
+            background_color: '#0f172a',
+            theme_color: '#059669'
+          };
+          const link = document.createElement('link');
+          link.rel = 'manifest';
+          link.href = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));
+          document.head.appendChild(link);
+
+          if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+            const sw = `
+              const CACHE = 'car-manager-maroc-v1';
+              self.addEventListener('install', e => self.skipWaiting());
+              self.addEventListener('activate', e => self.clients.claim());
+              self.addEventListener('fetch', e => {
+                e.respondWith(caches.match(e.request).then(r => r || fetch(e.request).then(res => {
+                  if (e.request.method === 'GET' && res.status === 200) {
+                    const copy = res.clone();
+                    caches.open(CACHE).then(c => c.put(e.request, copy));
+                  }
+                  return res;
+                }).catch(() => r)));
+              });
+            `;
+            navigator.serviceWorker.register(URL.createObjectURL(new Blob([sw], { type: 'application/javascript' }))).catch(() => {});
+          }
+        } catch (_) {}
+      }
+
+      async loadAllData() {
+        this.state.vehicles = await this.db.getAll('vehicles');
+        this.state.customers = await this.db.getAll('customers');
+        this.state.reservations = await this.db.getAll('reservations');
+        this.state.inspections = await this.db.getAll('inspections');
+        this.state.transactions = await this.db.getAll('transactions');
+        const s = await this.db.getAll('settings');
+        if (s && s.length) this.state.settings = { ...this.state.settings, ...s[0] };
+        else await this.db.put('settings', this.state.settings);
+      }
+
+      async seedMoroccanDemoData() {
+        const d = (offset) => {
+          const dt = new Date();
+          dt.setDate(dt.getDate() + offset);
+          return dt.toISOString().split('T')[0];
+        };
+
+        const vehicles = [
+          { id: 'v1', model: 'Dacia Logan 1.5 dCi', plate: '45812-أ-54', year: 2023, fuel: 'Diesel', dailyRate: 280, mileage: 42500, status: 'rented', insuranceExpiry: d(110), visiteExpiry: d(240), nextVidangeKm: 45000 },
+          { id: 'v2', model: 'Renault Clio 5 Intens', plate: '19204-ب-1', year: 2024, fuel: 'Diesel', dailyRate: 350, mileage: 28100, status: 'available', insuranceExpiry: d(12), visiteExpiry: d(310), nextVidangeKm: 30000 },
+          { id: 'v3', model: 'Peugeot 208 GT Line', plate: '78341-أ-26', year: 2023, fuel: 'Essence', dailyRate: 340, mileage: 36900, status: 'available', insuranceExpiry: d(85), visiteExpiry: d(8), nextVidangeKm: 40000 },
+          { id: 'v4', model: 'Hyundai Tucson BVA', plate: '90412-أ-6', year: 2024, fuel: 'Diesel', dailyRate: 650, mileage: 19400, status: 'rented', insuranceExpiry: d(195), visiteExpiry: d(340), nextVidangeKm: 20000 },
+          { id: 'v5', model: 'Dacia Duster 4x2', plate: '33109-هـ-54', year: 2022, fuel: 'Diesel', dailyRate: 400, mileage: 68200, status: 'available', insuranceExpiry: d(150), visiteExpiry: d(120), nextVidangeKm: 70000 },
+          { id: 'v6', model: 'Citroën C3 Feel', plate: '61280-أ-33', year: 2023, fuel: 'Diesel', dailyRate: 300, mileage: 51000, status: 'maintenance', insuranceExpiry: d(70), visiteExpiry: d(180), nextVidangeKm: 60000 }
+        ];
+
+        const customers = [
+          { id: 'c1', fullName: 'يوسف بناني / Youssef Bennani', cin: 'JB482910', license: '54/198432', phone: '0661-458912', address: 'أكادير', notes: '', tag: 'vip' },
+          { id: 'c2', fullName: 'سلمى الإدريسي / Salma El Idrissi', cin: 'BE791234', license: '01/882310', phone: '0662-991023', address: 'الدار البيضاء', notes: '', tag: 'normal' },
+          { id: 'c3', fullName: 'كريم التازي / Karim Tazi', cin: 'EE512098', license: '26/441209', phone: '0670-332198', address: 'مراكش', notes: '', tag: 'vip' }
+        ];
+
+        const reservations = [
+          { id: 'r1', vehicleId: 'v1', customerId: 'c1', pickupDate: d(-2) + 'T10:00', returnDate: d(3) + 'T10:00', days: 5, dailyRate: 280, extras: 0, discount: 0, totalAmount: 1400, paidAmount: 1400, depositAmount: 3000, status: 'active' },
+          { id: 'r2', vehicleId: 'v4', customerId: 'c2', pickupDate: d(-3) + 'T14:00', returnDate: d(0) + 'T18:00', days: 3, dailyRate: 650, extras: 0, discount: 0, totalAmount: 1950, paidAmount: 1500, depositAmount: 5000, status: 'active' }
+        ];
+
+        const transactions = [
+          { id: 't1', type: 'income', category: 'rental', vehicleId: 'v1', amount: 1400, date: d(-2), description: 'كراء Dacia Logan - يوسف بناني' },
+          { id: 't2', type: 'income', category: 'rental', vehicleId: 'v4', amount: 1500, date: d(-3), description: 'تسبيق كراء Hyundai Tucson' },
+          { id: 't3', type: 'expense', category: 'vidange', vehicleId: 'v1', amount: 650, date: d(-10), description: 'Vidange + filtres' },
+          { id: 't4', type: 'expense', category: 'repair', vehicleId: 'v6', amount: 950, date: d(-1), description: 'Freins Citroën C3' }
+        ];
+
+        for (const x of vehicles) await this.db.put('vehicles', x);
+        for (const x of customers) await this.db.put('customers', x);
+        for (const x of reservations) await this.db.put('reservations', x);
+        for (const x of transactions) await this.db.put('transactions', x);
+      }
+
+      // PIN & Biometric
+      enterPinDigit(d) {
+        if (this.pinBuffer.length >= 4) return;
+        this.pinBuffer += d;
+        this.updatePinDots();
+        if (this.pinBuffer.length === 4) setTimeout(() => this.verifyPin(), 100);
+      }
+
+      clearPinInput() {
+        this.pinBuffer = this.pinBuffer.slice(0, -1);
+        this.updatePinDots();
+        document.getElementById('lock-error').textContent = '';
+      }
+
+      updatePinDots() {
+        document.querySelectorAll('.pin-dot').forEach((dot, idx) => {
+          dot.classList.toggle('bg-emerald-400', idx < this.pinBuffer.length);
+          dot.classList.toggle('scale-110', idx < this.pinBuffer.length);
+        });
+      }
+
+      verifyPin() {
+        if (this.pinBuffer === (this.state.settings.pin || '1234')) {
+          this.unlockApp();
+        } else {
+          document.getElementById('lock-error').textContent = this.lang === 'ar' ? 'رمز PIN غير صحيح' : 'Code PIN incorrect';
+          this.pinBuffer = '';
+          this.updatePinDots();
+        }
+      }
+
+      async triggerBiometricUnlock() {
+        try {
+          if (!window.PublicKeyCredential) throw new Error('No WebAuthn');
+          const challenge = crypto.getRandomValues(new Uint8Array(32));
+          await navigator.credentials.create({
+            publicKey: {
+              challenge,
+              rp: { name: 'Car Manager Maroc' },
+              user: { id: new Uint8Array([1, 2, 3, 4]), name: 'admin@local', displayName: 'Admin' },
+              pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+              authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' },
+              timeout: 15000
+            }
+          });
+          this.unlockApp();
+        } catch (_) {
+          document.getElementById('lock-error').textContent = this.lang === 'ar' ? 'استعمل رمز PIN (الافتراضي 1234)' : 'Utilisez le PIN (1234)';
+        }
+      }
+
+      unlockApp() {
+        this.isUnlocked = true;
+        this.pinBuffer = '';
+        this.updatePinDots();
+        document.getElementById('lock-screen').classList.add('hidden');
+        document.getElementById('app-shell').classList.remove('hidden');
+        this.renderNavigation();
+        this.renderCurrentView();
+      }
+
+      lockApp() {
+        this.isUnlocked = false;
+        this.pinBuffer = '';
+        this.updatePinDots();
+        document.getElementById('lock-error').textContent = '';
+        document.getElementById('app-shell').classList.add('hidden');
+        document.getElementById('lock-screen').classList.remove('hidden');
+      }
+
+      t(key) { return (I18N[this.lang] && I18N[this.lang][key]) || key; }
+
+      toggleLanguage() {
+        this.lang = this.lang === 'ar' ? 'fr' : 'ar';
+        this.applyLanguage(this.lang);
+        if (this.isUnlocked) {
+          this.renderNavigation();
+          this.renderCurrentView();
+        }
+      }
+
+      applyLanguage(lang) {
+        document.documentElement.lang = lang;
+        document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+        const topBadge = document.getElementById('lang-badge-top');
+        const deskBadge = document.getElementById('lang-badge-desktop');
+        if (topBadge) topBadge.textContent = lang === 'ar' ? 'FR' : 'AR';
+        if (deskBadge) deskBadge.textContent = lang.toUpperCase();
+        document.querySelectorAll('[data-i18n]').forEach(el => {
+          el.textContent = this.t(el.getAttribute('data-i18n'));
+        });
+        this.updateHeaderDate();
+      }
+
+      updateHeaderDate() {
+        const now = new Date();
+        const el = document.getElementById('header-date');
+        if (el) el.textContent = now.toLocaleDateString(this.lang === 'ar' ? 'ar-MA' : 'fr-MA', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        const sideName = document.getElementById('sidebar-agency-name');
+        if (sideName) sideName.textContent = this.state.settings.agencyName;
+      }
+
+      formatMAD(val) {
+        return `${Number(val || 0).toLocaleString('fr-MA', { maximumFractionDigits: 2 })} MAD`;
+      }
+
+      showToast(msg, type = 'success') {
+        const box = document.getElementById('toast-container');
+        const cls = type === 'error' ? 'bg-rose-600 text-white' : type === 'warning' ? 'bg-amber-500 text-slate-950' : 'bg-emerald-600 text-white';
+        const el = document.createElement('div');
+        el.className = `pointer-events-auto px-4 py-3 rounded-2xl shadow-xl text-xs sm:text-sm font-semibold flex items-center gap-2 transition ${cls}`;
+        el.innerHTML = `<i data-lucide="${type === 'error' ? 'alert-circle' : 'check-circle-2'}" class="w-4 h-4 shrink-0"></i><span>${msg}</span>`;
+        box.appendChild(el);
+        lucide.createIcons();
+        setTimeout(() => { el.classList.add('opacity-0'); setTimeout(() => el.remove(), 300); }, 3200);
+      }
+
+      renderNavigation() {
+        const items = [
+          { id: 'dashboard', icon: 'layout-dashboard', label: this.t('nav_dashboard') },
+          { id: 'fleet', icon: 'car', label: this.t('nav_fleet') },
+          { id: 'reservations', icon: 'calendar-check', label: this.t('nav_reservations') },
+          { id: 'customers', icon: 'users', label: this.t('nav_customers') },
+          { id: 'finance', icon: 'wallet', label: this.t('nav_finance') },
+          { id: 'reports', icon: 'file-spreadsheet', label: this.t('nav_reports') },
+          { id: 'settings', icon: 'shield-check', label: this.t('nav_settings') }
+        ];
+
+        document.getElementById('desktop-nav').innerHTML = items.map(it => `
+          <button type="button" onclick="app.switchTab('${it.id}')" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold transition ${
+            this.currentTab === it.id ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+          }">
+            <i data-lucide="${it.icon}" class="w-4 h-4"></i>
+            <span class="truncate">${it.label}</span>
+          </button>
+        `).join('');
+
+        const mobile = [
+          { id: 'dashboard', icon: 'layout-dashboard', label: this.lang === 'ar' ? 'الرئيسية' : 'Accueil' },
+          { id: 'fleet', icon: 'car', label: this.lang === 'ar' ? 'السيارات' : 'Flotte' },
+          { id: 'reservations', icon: 'calendar-check', label: this.lang === 'ar' ? 'الحجوزات' : 'Résa' },
+          { id: 'customers', icon: 'users', label: this.lang === 'ar' ? 'الزبائن' : 'Clients' },
+          { id: 'finance', icon: 'wallet', label: this.lang === 'ar' ? 'المالية' : 'Finance' },
+          { id: 'settings', icon: 'settings', label: this.lang === 'ar' ? 'الإعدادات' : 'Plus' }
+        ];
+
+        document.getElementById('mobile-nav').innerHTML = mobile.map(it => `
+          <button type="button" onclick="app.switchTab('${it.id}')" class="flex flex-col items-center justify-center py-1 rounded-xl ${
+            this.currentTab === it.id ? 'text-emerald-600 font-bold' : 'text-slate-500'
+          }">
+            <i data-lucide="${it.icon}" class="w-5 h-5 mb-0.5"></i>
+            <span class="text-[10px] truncate max-w-full">${it.label}</span>
+          </button>
+        `).join('');
+
+        const active = items.find(i => i.id === this.currentTab);
+        document.getElementById('page-title').textContent = active ? active.label : '';
+        lucide.createIcons();
+      }
+
+      switchTab(tab) {
+        this.currentTab = tab;
+        this.renderNavigation();
+        this.renderCurrentView();
+      }
+
+      renderCurrentView() {
+        const main = document.getElementById('main-view');
+        const map = {
+          dashboard: () => this.viewDashboard(),
+          fleet: () => this.viewFleet(),
+          reservations: () => this.viewReservations(),
+          customers: () => this.viewCustomers(),
+          finance: () => this.viewFinance(),
+          reports: () => this.viewReports(),
+          settings: () => this.viewSettings()
+        };
+        main.innerHTML = (map[this.currentTab] || map.dashboard)();
+        lucide.createIcons();
+      }
+
+      getComplianceStatus(dateStr) {
+        if (!dateStr) return { code: 'valid', label: this.t('valid'), badge: 'bg-emerald-100 text-emerald-700 border-emerald-200' };
+        const days = Math.ceil((new Date(dateStr) - new Date().setHours(0, 0, 0, 0)) / 86400000);
+        if (days < 0) return { code: 'expired', label: this.t('expired'), badge: 'bg-rose-100 text-rose-700 border-rose-200' };
+        if (days <= 20) return { code: 'soon', label: `${this.t('expiring_soon')} (${days}j)`, badge: 'bg-amber-100 text-amber-800 border-amber-200' };
+        return { code: 'valid', label: this.t('valid'), badge: 'bg-emerald-100 text-emerald-700 border-emerald-200' };
+      }
+
+      collectUrgentAlerts() {
+        const alerts = [];
+        const today = new Date().toISOString().split('T')[0];
+
+        this.state.vehicles.forEach(v => {
+          const ins = this.getComplianceStatus(v.insuranceExpiry);
+          if (ins.code !== 'valid') alerts.push({ severity: ins.code === 'expired' ? 'high' : 'medium', icon: 'shield-alert', text: `${v.model} (${v.plate}) — ${this.t('insurance_exp')}: ${v.insuranceExpiry} (${ins.label})` });
+          const vis = this.getComplianceStatus(v.visiteExpiry);
+          if (vis.code !== 'valid') alerts.push({ severity: vis.code === 'expired' ? 'high' : 'medium', icon: 'wrench', text: `${v.model} (${v.plate}) — ${this.t('visite_exp')}: ${v.visiteExpiry} (${vis.label})` });
+          const kmLeft = Number(v.nextVidangeKm) - Number(v.mileage);
+          if (kmLeft <= 1000) alerts.push({ severity: kmLeft <= 0 ? 'high' : 'medium', icon: 'droplet', text: `${v.model} (${v.plate}) — Vidange (${kmLeft} km)` });
+        });
+
+        this.state.reservations.forEach(r => {
+          if (r.status === 'active' && r.returnDate && r.returnDate.startsWith(today)) {
+            const car = this.state.vehicles.find(v => v.id === r.vehicleId);
+            const cus = this.state.customers.find(c => c.id === r.customerId);
+            alerts.push({ severity: 'info', icon: 'clock', text: `${this.lang === 'ar' ? 'استرجاع اليوم:' : 'Retour aujourd’hui:'} ${car ? car.model : ''} — ${cus ? cus.fullName : ''}` });
+          }
+        });
+
+        return alerts;
+      }
+
+      checkReservationConflict(vehicleId, pickupStr, returnStr, ignoreId = null) {
+        const s = new Date(pickupStr).getTime();
+        const e = new Date(returnStr).getTime();
+        if (isNaN(s) || isNaN(e) || e <= s) return { invalidRange: true };
+        for (const r of this.state.reservations) {
+          if (r.id === ignoreId || r.vehicleId !== vehicleId) continue;
+          if (r.status === 'cancelled' || r.status === 'completed') continue;
+          const rs = new Date(r.pickupDate).getTime();
+          const re = new Date(r.returnDate).getTime();
+          if (s < re && e > rs) {
+            const cus = this.state.customers.find(c => c.id === r.customerId);
+            return { conflict: true, booking: r, customerName: cus ? cus.fullName : 'Client' };
+          }
+        }
+        return { conflict: false };
+      }
+
+      viewDashboard() {
+        const inc = this.state.transactions.filter(t => t.type === 'income').reduce((a, b) => a + Number(b.amount), 0);
+        const exp = this.state.transactions.filter(t => t.type === 'expense').reduce((a, b) => a + Number(b.amount), 0);
+        const profit = inc - exp;
+        const active = this.state.reservations.filter(r => r.status === 'active').length;
+        const util = Math.round((active / (this.state.vehicles.length || 1)) * 100);
+        const alerts = this.collectUrgentAlerts();
+
+        const carProfits = this.state.vehicles.map(v => {
+          const vInc = this.state.transactions.filter(t => t.type === 'income' && t.vehicleId === v.id).reduce((a, b) => a + Number(b.amount), 0);
+          const vExp = this.state.transactions.filter(t => t.type === 'expense' && t.vehicleId === v.id).reduce((a, b) => a + Number(b.amount), 0);
+          return { name: v.model, plate: v.plate, profit: vInc - vExp, inc: vInc, exp: vExp };
+        });
+        const maxVal = Math.max(...carProfits.map(c => Math.max(c.inc, c.exp, 1000)), 1000);
+
+        return `
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            <div class="bg-white p-4 rounded-2xl border border-slate-200">
+              <div class="text-xs font-semibold text-slate-500 mb-1">${this.t('kpi_revenue')}</div>
+              <div class="text-xl font-extrabold text-slate-900">${this.formatMAD(inc)}</div>
+            </div>
+            <div class="bg-white p-4 rounded-2xl border border-slate-200">
+              <div class="text-xs font-semibold text-slate-500 mb-1">${this.t('kpi_expenses')}</div>
+              <div class="text-xl font-extrabold text-rose-600">${this.formatMAD(exp)}</div>
+            </div>
+            <div class="bg-gradient-to-br from-slate-900 to-slate-800 text-white p-4 rounded-2xl">
+              <div class="text-xs font-semibold text-slate-300 mb-1">${this.t('kpi_profit')}</div>
+              <div class="text-xl font-extrabold text-emerald-400">${this.formatMAD(profit)}</div>
+            </div>
+            <div class="bg-white p-4 rounded-2xl border border-slate-200">
+              <div class="text-xs font-semibold text-slate-500 mb-1">${this.t('kpi_active')}</div>
+              <div class="text-xl font-extrabold text-slate-900">${active} / ${this.state.vehicles.length}</div>
+            </div>
+            <div class="bg-white p-4 rounded-2xl border border-slate-200">
+              <div class="text-xs font-semibold text-slate-500 mb-1">${this.t('kpi_utilization')}</div>
+              <div class="text-xl font-extrabold text-slate-900">${util}%</div>
+              <div class="w-full bg-slate-100 h-1.5 rounded-full mt-2 overflow-hidden">
+                <div class="bg-emerald-500 h-full" style="width:${util}%"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-2xl border border-slate-200 p-5">
+            <h2 class="font-bold text-sm sm:text-base text-slate-900 flex items-center gap-2 mb-3">
+              <i data-lucide="bell-ring" class="w-5 h-5 text-amber-500"></i>
+              <span>${this.t('alerts_title')}</span>
+            </h2>
+            ${alerts.length === 0 ? `
+              <p class="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl p-3 font-medium">${this.t('no_alerts')}</p>
+            ` : `
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                ${alerts.map(a => {
+                  const cls = a.severity === 'high' ? 'bg-rose-50 border-rose-200 text-rose-800' : a.severity === 'medium' ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-blue-50 border-blue-200 text-blue-800';
+                  return `<div class="flex items-center gap-2.5 p-3 rounded-xl border text-xs font-semibold ${cls}"><i data-lucide="${a.icon}" class="w-4 h-4 shrink-0"></i><span>${a.text}</span></div>`;
+                }).join('')}
+              </div>
+            `}
+          </div>
+
+          <div class="bg-white rounded-2xl border border-slate-200 p-5">
+            <h3 class="font-bold text-sm sm:text-base text-slate-900 mb-4">${this.t('chart_per_car')}</h3>
+            <div class="space-y-3">
+              ${carProfits.map(cp => `
+                <div>
+                  <div class="flex justify-between text-xs font-semibold mb-1">
+                    <span>${cp.name} <span class="text-slate-400 font-mono">(${cp.plate})</span></span>
+                    <span class="${cp.profit >= 0 ? 'text-emerald-600' : 'text-rose-600'} font-bold">${this.formatMAD(cp.profit)}</span>
+                  </div>
+                  <div class="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                    <div class="bg-emerald-500 h-full" style="width:${Math.min(100, (cp.inc / maxVal) * 100)}%"></div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      }
+
+      viewFleet() {
+        return `
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <h2 class="text-base sm:text-lg font-bold text-slate-900">${this.t('nav_fleet')} (${this.state.vehicles.length})</h2>
+            <button type="button" onclick="app.openVehicleModal()" class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-semibold flex items-center gap-2">
+              <i data-lucide="plus" class="w-4 h-4"></i><span>${this.t('add_vehicle')}</span>
+            </button>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            ${this.state.vehicles.map(v => {
+              const ins = this.getComplianceStatus(v.insuranceExpiry);
+              const vis = this.getComplianceStatus(v.visiteExpiry);
+              const vInc = this.state.transactions.filter(t => t.type === 'income' && t.vehicleId === v.id).reduce((a, b) => a + Number(b.amount), 0);
+              const vExp = this.state.transactions.filter(t => t.type === 'expense' && t.vehicleId === v.id).reduce((a, b) => a + Number(b.amount), 0);
+              const stCls = v.status === 'available' ? 'bg-emerald-100 text-emerald-700' : v.status === 'rented' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-800';
+              return `
+                <div class="bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
+                  <div class="flex items-start justify-between">
+                    <div>
+                      <h3 class="font-bold text-base text-slate-900">${v.model}</h3>
+                      <span class="inline-block mt-1 px-2.5 py-0.5 rounded text-xs font-bold ma-plate" dir="ltr">${v.plate}</span>
+                    </div>
+                    <span class="px-2.5 py-1 rounded-xl text-xs font-bold ${stCls}">${this.t('status_' + v.status)}</span>
+                  </div>
+                  <div class="grid grid-cols-3 gap-2 text-center bg-slate-50 p-2.5 rounded-xl text-xs">
+                    <div><span class="text-slate-400 block text-[10px]">${this.t('daily_rate')}</span><strong>${v.dailyRate} MAD</strong></div>
+                    <div><span class="text-slate-400 block text-[10px]">${this.t('mileage')}</span><strong>${Number(v.mileage).toLocaleString()} km</strong></div>
+                    <div><span class="text-slate-400 block text-[10px]">${this.t('fuel')}</span><strong>${v.fuel}</strong></div>
+                  </div>
+                  <div class="space-y-1 text-xs">
+                    <div class="flex justify-between"><span class="text-slate-500">${this.t('insurance_exp')}:</span><span class="px-2 py-0.5 rounded border font-semibold ${ins.badge}">${v.insuranceExpiry} • ${ins.label}</span></div>
+                    <div class="flex justify-between"><span class="text-slate-500">${this.t('visite_exp')}:</span><span class="px-2 py-0.5 rounded border font-semibold ${vis.badge}">${v.visiteExpiry} • ${vis.label}</span></div>
+                    <div class="flex justify-between"><span class="text-slate-500">${this.t('kpi_profit')}:</span><strong class="${vInc - vExp >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${this.formatMAD(vInc - vExp)}</strong></div>
+                  </div>
+                  <div class="flex gap-2 pt-2 border-t border-slate-100">
+                    <button type="button" onclick="app.openVehicleModal('${v.id}')" class="flex-1 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-semibold">${this.t('edit')}</button>
+                    <button type="button" onclick="app.openExpenseModal('${v.id}', 'expense')" class="flex-1 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-semibold">+ ${this.lang === 'ar' ? 'مصروف' : 'Dépense'}</button>
+                    <button type="button" onclick="app.deleteVehicle('${v.id}')" class="p-2 rounded-xl bg-rose-50 text-rose-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `;
+      }
+
+      openVehicleModal(id = null) {
+        const v = id ? this.state.vehicles.find(x => x.id === id) : {
+          id: 'v_' + Date.now(), model: '', plate: '', year: 2024, fuel: 'Diesel', dailyRate: 300, mileage: 0, status: 'available', insuranceExpiry: '', visiteExpiry: '', nextVidangeKm: 10000
+        };
+        this.openModal(id ? this.t('edit_vehicle') : this.t('add_vehicle'), `
+          <form onsubmit="app.saveVehicle(event, '${v.id}')" class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs sm:text-sm">
+            <div><label class="block font-semibold mb-1">${this.t('model')} *</label><input name="model" value="${v.model}" required class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            <div><label class="block font-semibold mb-1">${this.t('plate')} *</label><input name="plate" value="${v.plate}" required dir="ltr" class="w-full px-3 py-2.5 rounded-xl border font-mono" /></div>
+            <div><label class="block font-semibold mb-1">${this.t('year')}</label><input type="number" name="year" value="${v.year}" class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            <div><label class="block font-semibold mb-1">${this.t('fuel')}</label><select name="fuel" class="w-full px-3 py-2.5 rounded-xl border"><option value="Diesel" ${v.fuel==='Diesel'?'selected':''}>Diesel</option><option value="Essence" ${v.fuel==='Essence'?'selected':''}>Essence</option></select></div>
+            <div><label class="block font-semibold mb-1">${this.t('daily_rate')} *</label><input type="number" name="dailyRate" value="${v.dailyRate}" required class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            <div><label class="block font-semibold mb-1">${this.t('mileage')}</label><input type="number" name="mileage" value="${v.mileage}" class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            <div><label class="block font-semibold mb-1">${this.t('status')}</label><select name="status" class="w-full px-3 py-2.5 rounded-xl border"><option value="available" ${v.status==='available'?'selected':''}>${this.t('status_available')}</option><option value="rented" ${v.status==='rented'?'selected':''}>${this.t('status_rented')}</option><option value="maintenance" ${v.status==='maintenance'?'selected':''}>${this.t('status_maintenance')}</option></select></div>
+            <div><label class="block font-semibold mb-1">${this.t('vidange_next')}</label><input type="number" name="nextVidangeKm" value="${v.nextVidangeKm}" class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            <div><label class="block font-semibold mb-1">${this.t('insurance_exp')} *</label><input type="date" name="insuranceExpiry" value="${v.insuranceExpiry}" required class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            <div><label class="block font-semibold mb-1">${this.t('visite_exp')} *</label><input type="date" name="visiteExpiry" value="${v.visiteExpiry}" required class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            <div class="sm:col-span-2 flex justify-end gap-2 pt-3 border-t">
+              <button type="button" onclick="app.closeModal()" class="px-4 py-2 rounded-xl bg-slate-100 font-semibold">${this.t('cancel')}</button>
+              <button type="submit" class="px-5 py-2 rounded-xl bg-emerald-600 text-white font-semibold">${this.t('save')}</button>
+            </div>
+          </form>
+        `);
+      }
+
+      async saveVehicle(e, id) {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        await this.db.put('vehicles', {
+          id,
+          model: fd.get('model').trim(),
+          plate: fd.get('plate').trim(),
+          year: Number(fd.get('year')),
+          fuel: fd.get('fuel'),
+          dailyRate: Number(fd.get('dailyRate')),
+          mileage: Number(fd.get('mileage')),
+          status: fd.get('status'),
+          nextVidangeKm: Number(fd.get('nextVidangeKm')),
+          insuranceExpiry: fd.get('insuranceExpiry'),
+          visiteExpiry: fd.get('visiteExpiry')
+        });
+        await this.loadAllData();
+        this.closeModal();
+        this.renderCurrentView();
+        this.showToast(this.lang === 'ar' ? 'تم حفظ السيارة' : 'Véhicule enregistré');
+      }
+
+      async deleteVehicle(id) {
+        await this.db.delete('vehicles', id);
+        await this.loadAllData();
+        this.renderCurrentView();
+        this.showToast(this.lang === 'ar' ? 'تم الحذف' : 'Supprimé', 'warning');
+      }
+
+      viewCustomers() {
+        return `
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <h2 class="text-base sm:text-lg font-bold text-slate-900">${this.t('nav_customers')} (${this.state.customers.length})</h2>
+            <button type="button" onclick="app.openCustomerModal()" class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-semibold flex items-center gap-2">
+              <i data-lucide="user-plus" class="w-4 h-4"></i><span>${this.t('add_customer')}</span>
+            </button>
+          </div>
+          <div class="bg-white rounded-2xl border border-slate-200 overflow-x-auto">
+            <table class="w-full text-xs sm:text-sm">
+              <thead class="bg-slate-50 text-slate-600 border-b">
+                <tr>
+                  <th class="p-3.5 text-start">${this.t('full_name')}</th>
+                  <th class="p-3.5 text-start">CIN</th>
+                  <th class="p-3.5 text-start">${this.t('license_no')}</th>
+                  <th class="p-3.5 text-start">${this.t('phone')}</th>
+                  <th class="p-3.5 text-end">Actions</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100">
+                ${this.state.customers.map(c => `
+                  <tr>
+                    <td class="p-3.5 font-bold">${c.fullName}</td>
+                    <td class="p-3.5 font-mono">${c.cin}</td>
+                    <td class="p-3.5 font-mono">${c.license}</td>
+                    <td class="p-3.5 font-mono" dir="ltr">${c.phone}</td>
+                    <td class="p-3.5 text-end space-x-1 space-x-reverse">
+                      <button type="button" onclick="app.openCustomerModal('${c.id}')" class="p-2 rounded-lg bg-slate-100"><i data-lucide="edit-2" class="w-3.5 h-3.5"></i></button>
+                      <button type="button" onclick="app.deleteCustomer('${c.id}')" class="p-2 rounded-lg bg-rose-50 text-rose-600"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      openCustomerModal(id = null) {
+        const c = id ? this.state.customers.find(x => x.id === id) : { id: 'c_' + Date.now(), fullName: '', cin: '', license: '', phone: '', address: '', tag: 'normal' };
+        this.openModal(this.t('add_customer'), `
+          <form onsubmit="app.saveCustomer(event, '${c.id}')" class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs sm:text-sm">
+            <div class="sm:col-span-2"><label class="block font-semibold mb-1">${this.t('full_name')} *</label><input name="fullName" value="${c.fullName}" required class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            <div><label class="block font-semibold mb-1">CIN / Passeport *</label><input name="cin" value="${c.cin}" required class="w-full px-3 py-2.5 rounded-xl border font-mono uppercase" /></div>
+            <div><label class="block font-semibold mb-1">${this.t('license_no')} *</label><input name="license" value="${c.license}" required class="w-full px-3 py-2.5 rounded-xl border font-mono" /></div>
+            <div><label class="block font-semibold mb-1">${this.t('phone')} *</label><input name="phone" value="${c.phone}" required dir="ltr" class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            <div><label class="block font-semibold mb-1">${this.t('address')}</label><input name="address" value="${c.address || ''}" class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            <div class="sm:col-span-2 flex justify-end gap-2 pt-3 border-t">
+              <button type="button" onclick="app.closeModal()" class="px-4 py-2 rounded-xl bg-slate-100 font-semibold">${this.t('cancel')}</button>
+              <button type="submit" class="px-5 py-2 rounded-xl bg-emerald-600 text-white font-semibold">${this.t('save')}</button>
+            </div>
+          </form>
+        `);
+      }
+
+      async saveCustomer(e, id) {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        await this.db.put('customers', {
+          id,
+          fullName: fd.get('fullName').trim(),
+          cin: fd.get('cin').trim().toUpperCase(),
+          license: fd.get('license').trim(),
+          phone: fd.get('phone').trim(),
+          address: fd.get('address').trim(),
+          tag: 'normal'
+        });
+        await this.loadAllData();
+        this.closeModal();
+        this.renderCurrentView();
+        this.showToast(this.lang === 'ar' ? 'تم حفظ الزبون' : 'Client enregistré');
+      }
+
+      async deleteCustomer(id) {
+        await this.db.delete('customers', id);
+        await this.loadAllData();
+        this.renderCurrentView();
+      }
+
+      viewReservations() {
+        return `
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <h2 class="text-base sm:text-lg font-bold text-slate-900">${this.t('nav_reservations')} (${this.state.reservations.length})</h2>
+            <button type="button" onclick="app.openReservationModal()" class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-semibold flex items-center gap-2">
+              <i data-lucide="calendar-plus" class="w-4 h-4"></i><span>${this.t('newBooking')}</span>
+            </button>
+          </div>
+          <div class="space-y-3">
+            ${this.state.reservations.map(r => {
+              const car = this.state.vehicles.find(v => v.id === r.vehicleId) || { model: '-', plate: '-' };
+              const cus = this.state.customers.find(c => c.id === r.customerId) || { fullName: '-', cin: '-' };
+              const hasInsp = this.state.inspections.some(i => i.reservationId === r.id);
+              return `
+                <div class="bg-white rounded-2xl border border-slate-200 p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                  <div class="space-y-1 text-xs sm:text-sm">
+                    <div class="flex items-center gap-2 font-bold">
+                      <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 text-xs">${r.status}</span>
+                      <span>${car.model}</span>
+                      <span class="px-2 py-0.5 rounded text-xs ma-plate" dir="ltr">${car.plate}</span>
+                    </div>
+                    <div class="text-xs text-slate-600">${cus.fullName} (${cus.cin}) • <span dir="ltr">${r.pickupDate.replace('T', ' ')} → ${r.returnDate.replace('T', ' ')}</span></div>
+                    <div class="text-xs font-semibold">${this.t('total_mad')}: <strong>${this.formatMAD(r.totalAmount)}</strong> | ${this.t('paid_mad')}: <span class="text-emerald-700">${this.formatMAD(r.paidAmount)}</span></div>
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    <button type="button" onclick="app.openContractEditor('${r.id}')" class="px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold">${this.t('contract_btn')}</button>
+                    <button type="button" onclick="app.openInspectionModal('${r.id}')" class="px-3 py-2 rounded-xl bg-blue-50 text-blue-700 border border-blue-200 text-xs font-semibold">${this.t('inspect_btn')} ${hasInsp ? '✓' : ''}</button>
+                    ${r.status === 'active' ? `<button type="button" onclick="app.completeReservation('${r.id}')" class="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-semibold">${this.lang === 'ar' ? 'استرجاع وتصفية' : 'Clôturer'}</button>` : ''}
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `;
+      }
+
+      openReservationModal(id = null) {
+        const now = new Date();
+        const tom = new Date(now.getTime() + 86400000);
+        const fmt = (dt) => new Date(dt.getTime() - dt.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+        const r = id ? this.state.reservations.find(x => x.id === id) : {
+          id: 'r_' + Date.now(), vehicleId: this.state.vehicles[0]?.id || '', customerId: this.state.customers[0]?.id || '',
+          pickupDate: fmt(now), returnDate: fmt(tom), days: 1, dailyRate: this.state.vehicles[0]?.dailyRate || 300,
+          extras: 0, discount: 0, totalAmount: this.state.vehicles[0]?.dailyRate || 300, paidAmount: 0, depositAmount: 3000, status: 'active'
+        };
+
+        this.openModal(this.t('newBooking'), `
+          <form onsubmit="app.saveReservation(event, '${r.id}')" class="space-y-3 text-xs sm:text-sm">
+            <div id="conflict-alert-box" class="hidden p-3 rounded-xl bg-rose-50 border border-rose-300 text-rose-800 font-bold text-xs"></div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div><label class="block font-semibold mb-1">${this.t('nav_fleet')}</label><select id="res-vehicle" name="vehicleId" onchange="app.recalcRes('${r.id}', true)" class="w-full px-3 py-2.5 rounded-xl border">${this.state.vehicles.map(v => `<option value="${v.id}" data-rate="${v.dailyRate}" ${v.id===r.vehicleId?'selected':''}>${v.model} (${v.plate})</option>`).join('')}</select></div>
+              <div><label class="block font-semibold mb-1">${this.t('nav_customers')}</label><select name="customerId" class="w-full px-3 py-2.5 rounded-xl border">${this.state.customers.map(c => `<option value="${c.id}" ${c.id===r.customerId?'selected':''}>${c.fullName} (${c.cin})</option>`).join('')}</select></div>
+              <div><label class="block font-semibold mb-1">${this.t('pickup_date')}</label><input type="datetime-local" id="res-pickup" name="pickupDate" value="${r.pickupDate}" onchange="app.recalcRes('${r.id}')" required class="w-full px-3 py-2.5 rounded-xl border" /></div>
+              <div><label class="block font-semibold mb-1">${this.t('return_date')}</label><input type="datetime-local" id="res-return" name="returnDate" value="${r.returnDate}" onchange="app.recalcRes('${r.id}')" required class="w-full px-3 py-2.5 rounded-xl border" /></div>
+              <div><label class="block font-semibold mb-1">${this.t('daily_rate')}</label><input type="number" id="res-rate" name="dailyRate" value="${r.dailyRate}" oninput="app.recalcRes('${r.id}')" class="w-full px-3 py-2.5 rounded-xl border" /></div>
+              <div><label class="block font-semibold mb-1">${this.t('days_count')}</label><input type="number" id="res-days" name="days" value="${r.days}" readonly class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 font-bold" /></div>
+              <div><label class="block font-semibold mb-1">${this.t('paid_mad')}</label><input type="number" name="paidAmount" value="${r.paidAmount}" class="w-full px-3 py-2.5 rounded-xl border" /></div>
+              <div><label class="block font-semibold mb-1">${this.t('deposit_mad')}</label><input type="number" name="depositAmount" value="${r.depositAmount}" class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            </div>
+            <div class="p-3 rounded-xl bg-emerald-50 border border-emerald-200 flex justify-between items-center">
+              <span class="font-bold text-emerald-900">${this.t('total_mad')}</span>
+              <span id="res-total-display" class="text-lg font-extrabold text-emerald-800">${this.formatMAD(r.totalAmount)}</span>
+              <input type="hidden" id="res-total-input" name="totalAmount" value="${r.totalAmount}" />
+            </div>
+            <div class="flex justify-end gap-2 pt-2 border-t">
+              <button type="button" onclick="app.closeModal()" class="px-4 py-2 rounded-xl bg-slate-100 font-semibold">${this.t('cancel')}</button>
+              <button type="submit" class="px-5 py-2 rounded-xl bg-emerald-600 text-white font-semibold">${this.t('save')}</button>
+            </div>
+          </form>
+        `);
+        setTimeout(() => this.recalcRes(id), 40);
+      }
+
+      recalcRes(ignoreId = null, syncRate = false) {
+        const sel = document.getElementById('res-vehicle');
+        const rateEl = document.getElementById('res-rate');
+        if (syncRate) {
+          const opt = sel.options[sel.selectedIndex];
+          if (opt && opt.dataset.rate) rateEl.value = opt.dataset.rate;
+        }
+        const days = Math.max(1, Math.ceil((new Date(document.getElementById('res-return').value) - new Date(document.getElementById('res-pickup').value)) / 86400000));
+        document.getElementById('res-days').value = days;
+        const total = Math.max(0, days * Number(rateEl.value || 0));
+        document.getElementById('res-total-display').textContent = this.formatMAD(total);
+        document.getElementById('res-total-input').value = total;
+
+        const chk = this.checkReservationConflict(sel.value, document.getElementById('res-pickup').value, document.getElementById('res-return').value, ignoreId);
+        const box = document.getElementById('conflict-alert-box');
+        if (chk.conflict) {
+          box.classList.remove('hidden');
+          box.textContent = `${this.t('conflict_error')} ${chk.customerName}`;
+        } else {
+          box.classList.add('hidden');
+        }
+      }
+
+      async saveReservation(e, id) {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const vehicleId = fd.get('vehicleId');
+        const pickupDate = fd.get('pickupDate');
+        const returnDate = fd.get('returnDate');
+        const chk = this.checkReservationConflict(vehicleId, pickupDate, returnDate, id);
+        if (chk.invalidRange || chk.conflict) {
+          this.showToast(chk.conflict ? `${this.t('conflict_error')} ${chk.customerName}` : 'تاريخ غير صحيح', 'error');
+          return;
+        }
+
+        const obj = {
+          id, vehicleId, customerId: fd.get('customerId'), pickupDate, returnDate,
+          days: Number(fd.get('days')), dailyRate: Number(fd.get('dailyRate')),
+          extras: 0, discount: 0, totalAmount: Number(fd.get('totalAmount')),
+          paidAmount: Number(fd.get('paidAmount') || 0), depositAmount: Number(fd.get('depositAmount') || 0),
+          status: 'active'
+        };
+        await this.db.put('reservations', obj);
+
+        const car = this.state.vehicles.find(v => v.id === vehicleId);
+        if (car) { car.status = 'rented'; await this.db.put('vehicles', car); }
+        if (obj.paidAmount > 0) {
+          await this.db.put('transactions', {
+            id: 't_res_' + obj.id, type: 'income', category: 'rental', vehicleId,
+            amount: obj.paidAmount, date: pickupDate.split('T')[0], description: `كراء ${car ? car.model : ''}`
+          });
+        }
+        await this.loadAllData();
+        this.closeModal();
+        this.renderCurrentView();
+        this.showToast(this.lang === 'ar' ? 'تم حفظ الحجز' : 'Réservation enregistrée');
+      }
+
+      async completeReservation(id) {
+        const r = this.state.reservations.find(x => x.id === id);
+        if (!r) return;
+        r.status = 'completed';
+        r.paidAmount = r.totalAmount;
+        await this.db.put('reservations', r);
+        const car = this.state.vehicles.find(v => v.id === r.vehicleId);
+        if (car) { car.status = 'available'; await this.db.put('vehicles', car); }
+        await this.db.put('transactions', { id: 't_res_' + r.id, type: 'income', category: 'rental', vehicleId: r.vehicleId, amount: r.totalAmount, date: new Date().toISOString().split('T')[0], description: `تصفية عقد ${car ? car.model : ''}` });
+        await this.loadAllData();
+        this.renderCurrentView();
+        this.showToast(this.lang === 'ar' ? 'تم الاسترجاع' : 'Clôturée');
+      }
+
+      openContractEditor(resId) {
+        const r = this.state.reservations.find(x => x.id === resId);
+        const car = this.state.vehicles.find(v => v.id === r.vehicleId) || {};
+        const cus = this.state.customers.find(c => c.id === r.customerId) || {};
+        const s = this.state.settings;
+        const clauses = this.lang === 'ar' ? s.defaultContractClausesAr : s.defaultContractClausesFr;
+
+        this.openModal(this.t('contract_btn'), `
+          <div class="space-y-3 text-xs sm:text-sm">
+            <div class="p-3 rounded-xl bg-slate-50 border">
+              <strong>${s.agencyName}</strong> • ICE: ${s.ice} • ${this.lang === 'ar' ? 'المكتري:' : 'Locataire:'} ${cus.fullName} (${cus.cin}) • ${car.model} (${car.plate})
+            </div>
+            <textarea id="editable-contract-clauses" rows="7" class="w-full p-3 rounded-xl border text-xs">${clauses}</textarea>
+            <div class="flex justify-end gap-2">
+              <button type="button" onclick="app.closeModal()" class="px-4 py-2 rounded-xl bg-slate-100 font-semibold">${this.t('cancel')}</button>
+              <button type="button" onclick="app.printContractPDF('${r.id}')" class="px-5 py-2 rounded-xl bg-emerald-600 text-white font-bold">${this.t('print_pdf')}</button>
+            </div>
+          </div>
+        `);
+      }
+
+      printContractPDF(resId) {
+        const r = this.state.reservations.find(x => x.id === resId);
+        const car = this.state.vehicles.find(v => v.id === r.vehicleId) || {};
+        const cus = this.state.customers.find(c => c.id === r.customerId) || {};
+        const s = this.state.settings;
+        const clauses = document.getElementById('editable-contract-clauses').value;
+        const area = document.getElementById('print-area');
+        area.classList.remove('hidden');
+        area.innerHTML = `
+          <div style="font-family:'Cairo','Inter',sans-serif;direction:${this.lang==='ar'?'rtl':'ltr'};">
+            <h2 style="font-weight:800;font-size:18px;">${s.agencyName} — عقد كراء / CONTRAT</h2>
+            <p style="font-size:11px;">ICE: ${s.ice} | RC: ${s.rc} | Tél: ${s.phone}</p>
+            <hr style="margin:10px 0;" />
+            <p style="font-size:12px;"><strong>الزبون / Client:</strong> ${cus.fullName} | <strong>CIN:</strong> ${cus.cin} | <strong>Permis:</strong> ${cus.license}</p>
+            <p style="font-size:12px;"><strong>السيارة / Véhicule:</strong> ${car.model} (${car.plate}) | <strong>Total:</strong> ${this.formatMAD(r.totalAmount)}</p>
+            <div style="white-space:pre-line;font-size:11px;border:1px solid #cbd5e1;padding:10px;border-radius:8px;margin-top:10px;">${clauses}</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px;font-size:12px;">
+              <div style="border:1px dashed #64748b;padding:12px;height:80px;">توقيع الوكالة / Agence</div>
+              <div style="border:1px dashed #64748b;padding:12px;height:80px;">توقيع المكتري / Client</div>
+            </div>
+          </div>
+        `;
+        window.print();
+        setTimeout(() => area.classList.add('hidden'), 500);
+      }
+
+      openInspectionModal(resId) {
+        const r = this.state.reservations.find(x => x.id === resId);
+        const car = this.state.vehicles.find(v => v.id === r.vehicleId) || {};
+        const ex = this.state.inspections.find(i => i.reservationId === resId) || { odometer: car.mileage || 0, fuelLevel: '75%', photos: [] };
+        this._tempPhotos = [...(ex.photos || [])];
+
+        this.openModal(`${this.t('inspect_btn')} — ${car.model}`, `
+          <form onsubmit="app.saveInspection(event, '${resId}')" class="space-y-3 text-xs sm:text-sm">
+            <div class="grid grid-cols-2 gap-3">
+              <div><label class="block font-semibold mb-1">${this.t('mileage')}</label><input type="number" name="odometer" value="${ex.odometer}" required class="w-full px-3 py-2 rounded-xl border" /></div>
+              <div><label class="block font-semibold mb-1">Carburant</label><input name="fuelLevel" value="${ex.fuelLevel}" class="w-full px-3 py-2 rounded-xl border" /></div>
+            </div>
+            <div>
+              <label class="block font-semibold mb-1">${this.lang === 'ar' ? 'صور الحالة (تُضغط محلياً)' : 'Photos (compressées localement)'}</label>
+              <input type="file" accept="image/*" multiple onchange="app.handlePhotos(event)" class="text-xs" />
+              <div id="insp-thumbs" class="flex gap-2 mt-2 flex-wrap">${this._tempPhotos.map(p => `<img src="${p}" class="w-16 h-16 object-cover rounded-xl border" />`).join('')}</div>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <div class="flex justify-between text-xs font-bold mb-1"><span>${this.lang === 'ar' ? 'توقيع الزبون' : 'Client'}</span><button type="button" onclick="app.clearPad('pad-c')" class="text-rose-600">Clear</button></div>
+                <canvas id="pad-c" width="300" height="110" class="w-full h-28 border rounded-xl sig-pad bg-white"></canvas>
+              </div>
+              <div>
+                <div class="flex justify-between text-xs font-bold mb-1"><span>${this.lang === 'ar' ? 'توقيع الوكالة' : 'Agence'}</span><button type="button" onclick="app.clearPad('pad-a')" class="text-rose-600">Clear</button></div>
+                <canvas id="pad-a" width="300" height="110" class="w-full h-28 border rounded-xl sig-pad bg-white"></canvas>
+              </div>
+            </div>
+            <div class="flex justify-end gap-2 pt-2 border-t">
+              <button type="button" onclick="app.closeModal()" class="px-4 py-2 rounded-xl bg-slate-100 font-semibold">${this.t('cancel')}</button>
+              <button type="submit" class="px-5 py-2 rounded-xl bg-emerald-600 text-white font-semibold">${this.t('save')}</button>
+            </div>
+          </form>
+        `);
+        setTimeout(() => { this.initPad('pad-c'); this.initPad('pad-a'); }, 50);
+      }
+
+      handlePhotos(e) {
+        Array.from(e.target.files || []).slice(0, 4).forEach(file => {
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            const img = new Image();
+            img.onload = () => {
+              const c = document.createElement('canvas');
+              const scale = Math.min(1, 480 / img.width);
+              c.width = img.width * scale; c.height = img.height * scale;
+              c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+              const data = c.toDataURL('image/jpeg', 0.65);
+              this._tempPhotos.push(data);
+              const el = document.createElement('img');
+              el.src = data; el.className = 'w-16 h-16 object-cover rounded-xl border';
+              document.getElementById('insp-thumbs').appendChild(el);
+            };
+            img.src = ev.target.result;
+          };
+          reader.readAsDataURL(file);
+        });
+      }
+
+      initPad(id) {
+        const c = document.getElementById(id);
+        if (!c) return;
+        const ctx = c.getContext('2d');
+        ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+        let draw = false;
+        const pos = (e) => {
+          const r = c.getBoundingClientRect();
+          const cx = e.touches ? e.touches[0].clientX : e.clientX;
+          const cy = e.touches ? e.touches[0].clientY : e.clientY;
+          return { x: (cx - r.left) * (c.width / r.width), y: (cy - r.top) * (c.height / r.height) };
+        };
+        c.onmousedown = c.ontouchstart = (e) => { draw = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); };
+        c.onmousemove = c.ontouchmove = (e) => { if (!draw) return; e.preventDefault(); const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); };
+        window.addEventListener('mouseup', () => draw = false);
+        c.ontouchend = () => draw = false;
+      }
+
+      clearPad(id) { const c = document.getElementById(id); if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height); }
+
+      async saveInspection(e, resId) {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        await this.db.put('inspections', {
+          id: 'insp_' + resId, reservationId: resId, odometer: Number(fd.get('odometer')),
+          fuelLevel: fd.get('fuelLevel'), photos: this._tempPhotos,
+          clientSig: document.getElementById('pad-c').toDataURL('image/png'),
+          agencySig: document.getElementById('pad-a').toDataURL('image/png')
+        });
+        await this.loadAllData();
+        this.closeModal();
+        this.renderCurrentView();
+        this.showToast(this.lang === 'ar' ? 'تم حفظ المحضر' : 'État des lieux enregistré');
+      }
+
+      viewFinance() {
+        return `
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <h2 class="text-base sm:text-lg font-bold text-slate-900">${this.t('nav_finance')}</h2>
+            <div class="flex gap-2">
+              <button type="button" onclick="app.openExpenseModal('', 'income')" class="px-3.5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-semibold">+ ${this.lang === 'ar' ? 'مدخول' : 'Revenu'}</button>
+              <button type="button" onclick="app.openExpenseModal('', 'expense')" class="px-3.5 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold">+ ${this.lang === 'ar' ? 'مصروف' : 'Dépense'}</button>
+            </div>
+          </div>
+          <div class="bg-white rounded-2xl border border-slate-200 overflow-x-auto">
+            <table class="w-full text-xs sm:text-sm">
+              <thead class="bg-slate-50 border-b">
+                <tr><th class="p-3 text-start">${this.t('nav_fleet')}</th><th class="p-3 text-start">${this.t('kpi_revenue')}</th><th class="p-3 text-start">${this.t('kpi_expenses')}</th><th class="p-3 text-start">${this.t('kpi_profit')}</th></tr>
+              </thead>
+              <tbody class="divide-y">
+                ${this.state.vehicles.map(v => {
+                  const i = this.state.transactions.filter(t => t.type==='income' && t.vehicleId===v.id).reduce((a,b)=>a+Number(b.amount),0);
+                  const ex = this.state.transactions.filter(t => t.type==='expense' && t.vehicleId===v.id).reduce((a,b)=>a+Number(b.amount),0);
+                  return `<tr><td class="p-3 font-bold">${v.model} (${v.plate})</td><td class="p-3 text-emerald-600 font-semibold">${this.formatMAD(i)}</td><td class="p-3 text-rose-600 font-semibold">${this.formatMAD(ex)}</td><td class="p-3 font-extrabold ${i-ex>=0?'text-emerald-700':'text-rose-700'}">${this.formatMAD(i-ex)}</td></tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      openExpenseModal(vehicleId = '', type = 'expense') {
+        this.openModal(type === 'income' ? '+ Revenu' : '+ Dépense', `
+          <form onsubmit="app.saveTransaction(event)" class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs sm:text-sm">
+            <div><label class="block font-semibold mb-1">Type</label><select name="type" class="w-full px-3 py-2.5 rounded-xl border"><option value="expense" ${type==='expense'?'selected':''}>Expense</option><option value="income" ${type==='income'?'selected':''}>Income</option></select></div>
+            <div><label class="block font-semibold mb-1">${this.t('nav_fleet')}</label><select name="vehicleId" class="w-full px-3 py-2.5 rounded-xl border">${this.state.vehicles.map(v => `<option value="${v.id}" ${v.id===vehicleId?'selected':''}>${v.model} (${v.plate})</option>`).join('')}</select></div>
+            <div><label class="block font-semibold mb-1">Amount (MAD) *</label><input type="number" name="amount" required min="1" class="w-full px-3 py-2.5 rounded-xl border font-bold" /></div>
+            <div><label class="block font-semibold mb-1">Date *</label><input type="date" name="date" value="${new Date().toISOString().split('T')[0]}" required class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            <div class="sm:col-span-2"><label class="block font-semibold mb-1">Description *</label><input name="description" required class="w-full px-3 py-2.5 rounded-xl border" /></div>
+            <div class="sm:col-span-2 flex justify-end gap-2 pt-2 border-t">
+              <button type="button" onclick="app.closeModal()" class="px-4 py-2 rounded-xl bg-slate-100 font-semibold">${this.t('cancel')}</button>
+              <button type="submit" class="px-5 py-2 rounded-xl bg-emerald-600 text-white font-semibold">${this.t('save')}</button>
+            </div>
+          </form>
+        `);
+      }
+
+      async saveTransaction(e) {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        await this.db.put('transactions', {
+          id: 't_' + Date.now(), type: fd.get('type'), vehicleId: fd.get('vehicleId'),
+          amount: Number(fd.get('amount')), date: fd.get('date'), description: fd.get('description').trim()
+        });
+        await this.loadAllData();
+        this.closeModal();
+        this.renderCurrentView();
+        this.showToast(this.lang === 'ar' ? 'تم التسجيل' : 'Enregistré');
+      }
+
+      viewReports() {
+        return `
+          <div class="bg-white rounded-2xl border border-slate-200 p-5 space-y-4">
+            <h2 class="text-base sm:text-lg font-bold text-slate-900">${this.t('nav_reports')}</h2>
+            <div class="flex flex-wrap gap-3">
+              <button type="button" onclick="app.exportExcelCSV()" class="px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-xs sm:text-sm font-bold flex items-center gap-2"><i data-lucide="file-spreadsheet" class="w-4 h-4"></i><span>${this.t('export_excel')}</span></button>
+              <button type="button" onclick="app.printFinancialReportPDF()" class="px-4 py-2.5 rounded-xl bg-slate-900 text-white text-xs sm:text-sm font-bold flex items-center gap-2"><i data-lucide="printer" class="w-4 h-4"></i><span>${this.t('print_pdf')}</span></button>
+            </div>
+          </div>
+        `;
+      }
+
+      exportExcelCSV() {
+        let csv = '\uFEFFDate,Type,Vehicle,Description,Amount_MAD\n';
+        this.state.transactions.forEach(t => {
+          const car = this.state.vehicles.find(v => v.id === t.vehicleId);
+          csv += `${t.date},${t.type},"${car ? car.model : ''}","${(t.description || '').replace(/"/g, '""')}",${t.type === 'income' ? t.amount : -t.amount}\n`;
+        });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+        a.download = `CarManagerMaroc_${new Date().toISOString().split('T')[0]}.csv`;
+        a.click();
+      }
+
+      printFinancialReportPDF() {
+        const area = document.getElementById('print-area');
+        area.classList.remove('hidden');
+        area.innerHTML = `<div style="font-family:'Cairo','Inter',sans-serif;"><h2>${this.state.settings.agencyName} — تقرير مالي</h2><p>Transactions: ${this.state.transactions.length}</p></div>`;
+        window.print();
+        setTimeout(() => area.classList.add('hidden'), 500);
+      }
+
+      viewSettings() {
+        const s = this.state.settings;
+        return `
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <div class="bg-white rounded-2xl border border-slate-200 p-5 space-y-3">
+              <h3 class="font-bold text-base">${this.lang === 'ar' ? 'إعدادات الوكالة ورمز PIN' : 'Agence & PIN'}</h3>
+              <form onsubmit="app.saveSettings(event)" class="space-y-3 text-xs sm:text-sm">
+                <div><label class="block font-semibold mb-1">Agence</label><input name="agencyName" value="${s.agencyName}" required class="w-full px-3 py-2 rounded-xl border" /></div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div><label class="block font-semibold mb-1">ICE</label><input name="ice" value="${s.ice}" class="w-full px-3 py-2 rounded-xl border font-mono" /></div>
+                  <div><label class="block font-semibold mb-1">PIN (4)</label><input name="pin" value="${s.pin}" maxlength="4" pattern="\\d{4}" required class="w-full px-3 py-2 rounded-xl border font-mono font-bold" /></div>
+                </div>
+                <button type="submit" class="px-5 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold">${this.t('save')}</button>
+              </form>
+            </div>
+
+            <div class="bg-white rounded-2xl border border-slate-200 p-5 space-y-3">
+              <h3 class="font-bold text-base">${this.lang === 'ar' ? 'نسخة احتياطية مشفرة (AES-256) واختبار النظام' : 'Sauvegarde AES-256 & Tests'}</h3>
+              <input type="password" id="backup-password" placeholder="Mot de passe / كلمة المرور..." class="w-full px-3 py-2 rounded-xl border text-xs" />
+              <div class="flex flex-wrap gap-2">
+                <button type="button" onclick="app.exportEncryptedBackup()" class="flex-1 py-2.5 px-3 rounded-xl bg-slate-900 text-white text-xs font-semibold">${this.t('backup_export')}</button>
+                <label class="flex-1 py-2.5 px-3 rounded-xl bg-blue-50 text-blue-800 border border-blue-200 text-xs font-semibold text-center cursor-pointer">
+                  ${this.t('backup_import')}
+                  <input type="file" accept=".enc,.json" onchange="app.importEncryptedBackup(event)" class="hidden" />
+                </label>
+              </div>
+              <button type="button" onclick="app.runAutomatedSelfTests()" class="w-full py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">${this.t('run_tests')}</button>
+              <div id="test-results-box" class="text-xs space-y-1"></div>
+            </div>
+          </div>
+        `;
+      }
+
+      async saveSettings(e) {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        this.state.settings.agencyName = fd.get('agencyName').trim();
+        this.state.settings.ice = fd.get('ice').trim();
+        this.state.settings.pin = fd.get('pin').trim();
+        await this.db.put('settings', this.state.settings);
+        this.updateHeaderDate();
+        this.showToast(this.lang === 'ar' ? 'تم الحفظ' : 'Enregistré');
+      }
+
+      async exportEncryptedBackup() {
+        const pwd = document.getElementById('backup-password').value;
+        if (!pwd || pwd.length < 4) return this.showToast('كلمة المرور 4 أحرف على الأقل', 'error');
+        const enc = await CryptoBackupEngine.encryptJSON(this.state, pwd);
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([enc], { type: 'application/json' }));
+        a.download = `CarManagerMaroc_Backup_${new Date().toISOString().split('T')[0]}.enc`;
+        a.click();
+      }
+
+      async importEncryptedBackup(e) {
+        const file = e.target.files[0];
+        const pwd = document.getElementById('backup-password').value;
+        if (!file || !pwd) return this.showToast('أدخل كلمة المرور واختر الملف', 'error');
+        try {
+          const data = await CryptoBackupEngine.decryptJSON(await file.text(), pwd);
+          for (const st of ['vehicles', 'customers', 'reservations', 'inspections', 'transactions']) {
+            if (Array.isArray(data[st])) { await this.db.clearStore(st); for (const item of data[st]) await this.db.put(st, item); }
+          }
+          if (data.settings) await this.db.put('settings', data.settings);
+          await this.loadAllData();
+          this.renderCurrentView();
+          this.showToast('تمت الاستعادة بنجاح');
+        } catch (_) {
+          this.showToast('كلمة المرور خاطئة', 'error');
+        }
+      }
+
+      async runAutomatedSelfTests() {
+        const res = [];
+        await this.db.put('vehicles', { id: 't_chk', model: 'Test', plate: '00000-أ-1', dailyRate: 100 });
+        const list = await this.db.getAll('vehicles');
+        res.push(['IndexedDB CRUD', list.some(x => x.id === 't_chk')]);
+        await this.db.delete('vehicles', 't_chk');
+
+        const enc = await CryptoBackupEngine.encryptJSON({ ok: true }, '1234');
+        const dec = await CryptoBackupEngine.decryptJSON(enc, '1234');
+        res.push(['AES-GCM Encrypt/Decrypt', dec.ok === true]);
+
+        const firstRes = this.state.reservations[0];
+        if (firstRes) {
+          res.push(['Overlap Conflict Engine', this.checkReservationConflict(firstRes.vehicleId, firstRes.pickupDate, firstRes.returnDate).conflict === true]);
+        }
+
+        document.getElementById('test-results-box').innerHTML = res.map(([n, ok]) =>
+          `<div class="p-2 rounded-xl font-semibold flex justify-between ${ok ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'}"><span>${n}</span><span>${ok ? 'PASS ✅' : 'FAIL ❌'}</span></div>`
+        ).join('');
+      }
+
+      openModal(title, html) {
+        document.getElementById('modal-title').textContent = title;
+        document.getElementById('modal-body').innerHTML = html;
+        const b = document.getElementById('modal-backdrop');
+        b.classList.remove('hidden'); b.classList.add('flex');
+        lucide.createIcons();
+      }
+
+      closeModal() {
+        const b = document.getElementById('modal-backdrop');
+        b.classList.add('hidden'); b.classList.remove('flex');
+      }
+    }
+
+    const app = new CarManagerApp();
+    window.addEventListener('DOMContentLoaded', () => app.init());
+  </script>
+</body>
+</html>
+```
