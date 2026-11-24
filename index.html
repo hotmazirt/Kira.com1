@@ -1,0 +1,139 @@
+<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Car Manager Maroc</title><link rel="manifest" href="manifest.json"><meta name="theme-color" content="#0f766e"><link rel="icon" href="icon-192.png">
+<style>
+:root{--bg:#f1f5f4;--c:#fff;--t:#0f1f1c;--m:#5b6b67;--p:#0f766e;--r:#b91c1c;--bd:#d6e0de}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1514;--c:#16211f;--t:#e8f1ef;--m:#93a6a2;--p:#2dd4bf;--r:#f87171;--bd:#26362f}}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,"Segoe UI",Tahoma,sans-serif;background:var(--bg);color:var(--t);padding-bottom:env(safe-area-inset-bottom)}
+header{background:var(--p);color:#fff;padding:calc(10px + env(safe-area-inset-top)) 14px 0;position:sticky;top:0;z-index:5}
+header h1{font-size:17px;margin:0 0 8px}#nav{display:flex;gap:4px;overflow-x:auto}#nav a{padding:8px 12px;border-radius:8px 8px 0 0;white-space:nowrap;font-size:14px;opacity:.8;cursor:pointer}#nav a.on{background:var(--bg);color:var(--p);opacity:1;font-weight:700}
+#main{padding:12px;max-width:900px;margin:auto}.card{background:var(--c);border:1px solid var(--bd);border-radius:12px;padding:12px;margin:8px 0}.card small{display:block;color:var(--m);margin:3px 0}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}.k{background:var(--c);border:1px solid var(--bd);border-radius:12px;padding:12px}.k b{display:block;font-size:20px;color:var(--p)}.k span{font-size:12px;color:var(--m)}
+button,.b{font:inherit;padding:8px 12px;border-radius:8px;border:1px solid var(--bd);background:var(--c);color:var(--t);cursor:pointer;margin:2px}.b,.pri{background:var(--p);color:#fff;border-color:var(--p)}.d{color:var(--r)}.ac{margin-top:6px}
+input,select,textarea{font:inherit;width:100%;padding:9px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--t);margin:3px 0 8px}label{font-size:13px;color:var(--m);display:block}
+#modal,#lock{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;z-index:20;padding:10px}.box{background:var(--c);border-radius:14px;padding:16px;width:100%;max-width:480px;max-height:92vh;overflow:auto}
+#lock{background:var(--p);z-index:40}table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-bottom:1px solid var(--bd);padding:6px;text-align:start}.warn{color:var(--r)}
+canvas{border:1px dashed var(--m);border-radius:8px;width:100%;height:140px;touch-action:none;background:#fff}.ph img{width:70px;height:55px;object-fit:cover;margin:2px;border-radius:6px}
+#print{display:none;position:fixed;inset:0;background:#fff;color:#000;overflow:auto;z-index:50;padding:12px}.doc{white-space:pre-wrap;line-height:1.9;font-size:14px;outline:1px dashed #aaa;padding:10px}.doc table td,.doc table th{color:#000}
+@media print{#app,.noprint,#modal{display:none!important}#print{position:static;padding:0}.doc{outline:none}}
+</style></head><body>
+<div id="app"><header><h1>🚗 Car Manager Maroc</h1><div id="nav"></div></header><div id="main"></div></div>
+<div id="modal"></div><div id="lock"></div><div id="print"></div>
+<script>
+/*CORE*/
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+const overlap=(a1,a2,b1,b2)=>a1<=b2&&b1<=a2;
+const days=(s,e)=>Math.round((new Date(e)-new Date(s))/864e5)+1;
+const total=b=>days(b.start,b.end)*(+b.price||0);
+const inR=(d,f,t)=>d>=f&&d<=t;
+function conflict(db,b){return db.bookings.find(x=>x.id!==b.id&&x.car===b.car&&x.status!=='cancelled'&&b.status!=='cancelled'&&overlap(b.start,b.end,x.start,x.end));}
+function carStats(db,car,f,t){
+ const income=db.bookings.filter(b=>b.car===car&&b.status!=='cancelled'&&inR(b.start,f,t)).reduce((s,b)=>s+(+b.paid||0),0);
+ const due=db.bookings.filter(b=>b.car===car&&b.status!=='cancelled'&&inR(b.start,f,t)).reduce((s,b)=>s+total(b)-(+b.paid||0),0);
+ const exp=db.expenses.filter(x=>x.car===car&&inR(x.date,f,t)).reduce((s,x)=>s+(+x.amount||0),0);
+ const doc=db.docs.filter(x=>x.car===car&&inR(x.date,f,t)).reduce((s,x)=>s+(+x.cost||0),0);
+ return{income,due,exp:exp+doc,profit:income-exp-doc};}
+const hex=u=>[...new Uint8Array(u)].map(x=>x.toString(16).padStart(2,'0')).join('');
+async function hashPin(pin,salt){const m=await crypto.subtle.importKey('raw',new TextEncoder().encode(pin),'PBKDF2',false,['deriveBits']);return hex(await crypto.subtle.deriveBits({name:'PBKDF2',salt:new TextEncoder().encode(salt),iterations:150000,hash:'SHA-256'},m,256));}
+async function dkey(pw,salt){const m=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:150000,hash:'SHA-256'},m,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);}
+async function enc(obj,pw){const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));const c=await crypto.subtle.encrypt({name:'AES-GCM',iv},await dkey(pw,salt),new TextEncoder().encode(JSON.stringify(obj)));const o=new Uint8Array(28+c.byteLength);o.set(salt);o.set(iv,16);o.set(new Uint8Array(c),28);return o;}
+async function dec(buf,pw){const u=new Uint8Array(buf);const p=await crypto.subtle.decrypt({name:'AES-GCM',iv:u.slice(16,28)},await dkey(pw,u.slice(0,16)),u.slice(28));return JSON.parse(new TextDecoder().decode(p));}
+/*ENDCORE*/
+const $=(s,e=document)=>e.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const T={dash:['الرئيسية','Accueil'],cars:['السيارات','Voitures'],clients:['الزبائن','Clients'],bookings:['الحجوزات','Réservations'],expenses:['المصاريف','Dépenses'],docs:['التأمين والصيانة','Assurance & entretien'],reports:['التقارير','Rapports'],settings:['الإعدادات','Paramètres'],
+name:['الاسم','Nom'],plate:['الترقيم','Immatriculation'],year:['السنة','Année'],price:['الثمن/يوم (MAD)','Prix/jour (MAD)'],km:['العداد (كلم)','Kilométrage'],fuel:['الوقود','Carburant'],diesel:['ديزل','Diesel'],essence:['بنزين','Essence'],cin:['رقم ب.و.ت','N° CIN'],phone:['الهاتف','Téléphone'],license:['رخصة السياقة','Permis'],address:['العنوان','Adresse'],car:['السيارة','Voiture'],client:['الزبون','Client'],start:['من','Du'],end:['إلى','Au'],deposit:['الضمان (MAD)','Caution (MAD)'],paid:['المدفوع (MAD)','Payé (MAD)'],status:['الحالة','Statut'],reserved:['محجوز','Réservé'],active:['جارٍ','En cours'],done:['منتهٍ','Terminé'],cancelled:['ملغى','Annulé'],date:['التاريخ','Date'],cat:['الصنف','Catégorie'],carb:['وقود','Carburant'],repair:['إصلاح','Réparation'],wash:['غسيل','Lavage'],other:['أخرى','Autre'],amount:['المبلغ (MAD)','Montant (MAD)'],note:['ملاحظة','Note'],type:['النوع','Type'],insurance:['تأمين','Assurance'],technical:['فحص تقني','Contrôle technique'],maintenance:['صيانة','Entretien'],expiry:['تاريخ الانتهاء','Expiration'],cost:['التكلفة (MAD)','Coût (MAD)'],
+add:['إضافة','Ajouter'],edit:['تعديل','Modifier'],del:['حذف','Supprimer'],save:['حفظ','Enregistrer'],cancel:['إلغاء','Annuler'],close:['إغلاق','Fermer'],print:['طباعة / PDF','Imprimer / PDF'],contract:['العقد','Contrat'],out:['محضر التسليم','PV départ'],in:['محضر الاسترجاع','PV retour'],conflict:['⛔ تضارب: السيارة محجوزة في هذه الفترة','⛔ Conflit : voiture déjà réservée sur cette période'],bad:['بيانات غير صالحة','Données invalides'],sure:['هل أنت متأكد؟','Êtes-vous sûr ?'],hasb:['لا يمكن الحذف: توجد حجوزات','Suppression impossible : réservations liées'],
+active_now:['كراءات جارية','Locations en cours'],mi:['مداخيل الشهر','Revenus du mois'],me:['مصاريف الشهر','Dépenses du mois'],mp:['ربح الشهر','Bénéfice du mois'],alerts:['تنبيهات','Alertes'],none:['لا شيء','Rien'],expired:['منتهية/قريبة','expire bientôt'],
+income:['المداخيل','Revenus'],profit:['الربح','Bénéfice'],due:['المتبقي','Reste dû'],tot:['المجموع','Total'],csv:['تصدير Excel','Export Excel'],from:['من تاريخ','Du'],to:['إلى تاريخ','Au'],
+pin:['رمز PIN','Code PIN'],unlock:['فتح','Ouvrir'],wrong:['رمز خاطئ','Code erroné'],setpin:['اختر رمز PIN (4 أرقام على الأقل)','Choisissez un PIN (4 chiffres min.)'],lockn:['قفل الآن','Verrouiller'],agency:['اسم الوكالة','Nom de l’agence'],lang:['Français','العربية'],bio:['تفعيل البصمة','Activer l’empreinte'],bioL:['بصمة','Empreinte'],tpl:['نموذج العقد (قابل للتعديل)','Modèle de contrat (modifiable)'],reset:['استرجاع النموذج الافتراضي','Modèle par défaut'],bk:['نسخة احتياطية مشفرة','Sauvegarde chiffrée'],rs:['استرجاع نسخة','Restaurer'],pw:['كلمة سر النسخة','Mot de passe'],ok:['تم','Fait'],fail:['فشل','Échec'],fl:['مستوى الوقود','Niveau carburant'],ph:['صور','Photos'],sg:['التوقيع','Signature'],clr:['مسح','Effacer'],legal:['⚠ نموذج عام: يجب مراجعته من محامٍ قبل الاعتماد.','⚠ Modèle général : à faire valider par un avocat.'],data:['البيانات محفوظة محلياً على هذا الجهاز فقط ولا تُرسل لأي خادم.','Données stockées uniquement sur cet appareil, jamais envoyées à un serveur.']};
+let L='ar',V='dash',DB,Q={},unlocked=false;
+const t=k=>(T[k]||[k,k])[L==='ar'?0:1];
+const today=()=>new Date().toISOString().slice(0,10);
+const mon=()=>today().slice(0,8);
+const nm=(c,id)=>(DB[c].find(x=>x.id===id)||{}).name||'—';
+const mad=n=>(+n||0).toLocaleString(L==='ar'?'ar-MA':'fr-MA')+' MAD';
+const DEF={ar:`عقد كراء سيارة\n\nبين الموقعين أسفله:\n1) الوكالة: {{agency}} (المؤجِّر)\n2) الزبون: {{client}} — ب.و.ت: {{cin}} — رخصة السياقة: {{license}} — الهاتف: {{phone}} (المستأجِر)\n\nالمادة 1 – الموضوع: كراء السيارة {{car}} ذات الترقيم {{plate}} (العداد عند التسليم: {{km}} كلم).\nالمادة 2 – المدة: من {{start}} إلى {{end}} أي {{days}} يوم.\nالمادة 3 – الثمن: {{price}} درهم لليوم، المجموع {{total}} درهم، الضمان {{deposit}} درهم.\nالمادة 4 – التزامات المستأجر: استعمال السيارة بعناية، عدم إعارتها للغير، احترام قانون السير، وإرجاعها في الحالة المسلَّمة.\nالمادة 5 – المخالفات والحوادث: يتحمل المستأجر الغرامات والمخالفات خلال مدة الكراء، ويُبلغ المؤجر فوراً بأي حادث.\nالمادة 6 – التأخير: كل يوم تأخير يُحتسب بثمن يوم إضافي.\nالمادة 7 – الاختصاص: المحاكم المختصة بالمملكة المغربية.\n\nحُرر بتاريخ {{today}}.\n\nتوقيع المؤجر: ..............        توقيع المستأجر (قرئ وصودق عليه): ..............\n\n⚠ نموذج عام يجب مراجعته من طرف محامٍ قبل الاعتماد.`,
+fr:`CONTRAT DE LOCATION DE VÉHICULE\n\nEntre :\n1) L’agence : {{agency}} (le loueur)\n2) Le client : {{client}} — CIN : {{cin}} — Permis : {{license}} — Tél : {{phone}} (le locataire)\n\nArt. 1 – Objet : location du véhicule {{car}}, immatriculé {{plate}} (kilométrage départ : {{km}} km).\nArt. 2 – Durée : du {{start}} au {{end}}, soit {{days}} jour(s).\nArt. 3 – Prix : {{price}} MAD/jour, total {{total}} MAD, caution {{deposit}} MAD.\nArt. 4 – Obligations : usage soigneux, interdiction de prêter le véhicule, respect du code de la route, restitution en l’état.\nArt. 5 – Infractions et accidents : amendes à la charge du locataire ; tout accident doit être signalé immédiatement.\nArt. 6 – Retard : chaque jour de retard est facturé au tarif journalier.\nArt. 7 – Juridiction : tribunaux compétents du Royaume du Maroc.\n\nFait le {{today}}.\n\nLe loueur : ..............        Le locataire (lu et approuvé) : ..............\n\n⚠ Modèle général à faire valider par un avocat.`};
+const S={cars:[['name','text'],['plate','text'],['year','number'],['price','number'],['km','number'],['fuel','select',['diesel','essence']]],
+clients:[['name','text'],['cin','text'],['phone','tel'],['license','text'],['address','text']],
+bookings:[['car','ref','cars'],['client','ref','clients'],['start','date'],['end','date'],['price','number'],['deposit','number'],['paid','number'],['status','select',['reserved','active','done','cancelled']]],
+expenses:[['car','ref','cars'],['date','date'],['cat','select',['carb','repair','wash','other']],['amount','number'],['note','text']],
+docs:[['car','ref','cars'],['type','select',['insurance','technical','maintenance']],['date','date'],['expiry','date'],['cost','number'],['note','text']]};
+const TT={cars:r=>r.name,clients:r=>r.name,bookings:r=>nm('cars',r.car)+' ← '+nm('clients',r.client),expenses:r=>t(r.cat)+' — '+mad(r.amount),docs:r=>t(r.type)+' — '+nm('cars',r.car)};
+const SB={cars:r=>`${r.plate||''} · ${mad(r.price)}/${L==='ar'?'يوم':'j'} · ${r.km||0} km`,clients:r=>`${r.cin||''} · ${r.phone||''}`,bookings:r=>`${r.start} → ${r.end} · ${mad(total(r))} (${t('paid')} ${mad(r.paid)}) · ${t(r.status)}`,expenses:r=>`${nm('cars',r.car)} · ${r.date} · ${r.note||''}`,docs:r=>`${r.date||''} → ${t('expiry')}: ${r.expiry||'—'} · ${mad(r.cost)}`};
+/* storage */
+const idb=()=>new Promise((ok,ko)=>{const q=indexedDB.open('cmm',1);q.onupgradeneeded=()=>q.result.createObjectStore('kv');q.onsuccess=()=>ok(q.result);q.onerror=ko;});
+async function load(){const d=await idb();return new Promise(ok=>{const g=d.transaction('kv').objectStore('kv').get('db');g.onsuccess=()=>ok(g.result);});}
+async function save(){const d=await idb();return new Promise(ok=>{const x=d.transaction('kv','readwrite');x.objectStore('kv').put(DB,'db');x.oncomplete=ok;});}
+/* views */
+function render(){document.documentElement.lang=L;document.documentElement.dir=L==='ar'?'rtl':'ltr';
+$('#nav').innerHTML=Object.keys(VIEW).map(n=>`<a class="${n===V?'on':''}" onclick="V='${n}';render()">${t(n)}</a>`).join('');$('#main').innerHTML=VIEW[V]();}
+const list=e=>`<button class="b" onclick="form('${e}')">+ ${t('add')}</button>`+[...DB[e]].sort((a,b)=>(b.start||b.date||'').localeCompare(a.start||a.date||'')).map(r=>`<div class="card"><b>${esc(TT[e](r))}</b><small>${esc(SB[e](r))}</small><div class="ac">${e==='bookings'?`<button onclick="showContract('${r.id}')">📄 ${t('contract')}</button><button onclick="ho('${r.id}','out')">${r.out?'✅ ':''}${t('out')}</button><button onclick="ho('${r.id}','in')">${r.in?'✅ ':''}${t('in')}</button>`:''}<button onclick="form('${e}','${r.id}')">${t('edit')}</button><button class="d" onclick="del('${e}','${r.id}')">${t('del')}</button></div></div>`).join('');
+function range(){Q.f=Q.f||mon()+'01';Q.t=Q.t||today().slice(0,8)+'31';return[Q.f,Q.t];}
+const VIEW={dash(){const m=mon(),f=m+'01',to=m+'31';let inc=0,ex=0;DB.cars.forEach(c=>{const s=carStats(DB,c.id,f,to);inc+=s.income;ex+=s.exp;});
+ const act=DB.bookings.filter(b=>b.status!=='cancelled'&&inR(today(),b.start,b.end));const lim=new Date(Date.now()+30*864e5).toISOString().slice(0,10);
+ const al=DB.docs.filter(d=>d.expiry&&d.expiry<=lim);
+ return`<div class="g"><div class="k"><b>${act.length}</b><span>${t('active_now')}</span></div><div class="k"><b>${mad(inc)}</b><span>${t('mi')}</span></div><div class="k"><b>${mad(ex)}</b><span>${t('me')}</span></div><div class="k"><b>${mad(inc-ex)}</b><span>${t('mp')}</span></div></div>
+ <div class="card"><b>⚠ ${t('alerts')}</b>${al.map(d=>`<small class="${d.expiry<today()?'warn':''}">${t(d.type)} — ${esc(nm('cars',d.car))}: ${d.expiry}</small>`).join('')||`<small>${t('none')}</small>`}</div>
+ <div class="card"><b>${t('active_now')}</b>${act.map(b=>`<small>${esc(nm('cars',b.car))} ← ${esc(nm('clients',b.client))} · ${t('end')} ${b.end}</small>`).join('')||`<small>${t('none')}</small>`}</div><small>🔒 ${t('data')}</small>`;},
+cars:()=>list('cars'),clients:()=>list('clients'),bookings:()=>list('bookings'),expenses:()=>list('expenses'),docs:()=>list('docs'),
+reports(){const[f,to]=range();const rows=DB.cars.map(c=>({c,...carStats(DB,c.id,f,to)}));const sum=k=>rows.reduce((s,r)=>s+r[k],0);
+ return`<div class="card"><label>${t('from')}<input type="date" value="${f}" onchange="Q.f=this.value;render()"></label><label>${t('to')}<input type="date" value="${to}" onchange="Q.t=this.value;render()"></label><button class="b" onclick="csv()">${t('csv')}</button><button onclick="showDoc(repHtml())">${t('print')}</button></div><div class="card" style="overflow:auto">${repHtml()}</div>`;},
+settings(){return`<div class="card"><label>${t('agency')}<input value="${esc(DB.set.agency||'')}" onchange="DB.set.agency=this.value;save()"></label><button onclick="L=L==='ar'?'fr':'ar';DB.set.lang=L;save();render()">${t('lang')}</button><button onclick="doLock()">🔒 ${t('lockn')}</button><button onclick="bioOn()">${t('bio')}</button><button onclick="setPin()">${t('pin')}</button></div>
+<div class="card"><b>${t('bk')}</b><button class="b" onclick="backup()">⬇ ${t('bk')}</button><label>${t('rs')}<input type="file" id="rf" onchange="restore(this.files[0])"></label></div>
+<div class="card"><b>${t('tpl')}</b><textarea rows="12" onchange="DB.set['tpl_'+L]=this.value;save()">${esc(DB.set['tpl_'+L]||DEF[L])}</textarea><button onclick="delete DB.set['tpl_'+L];save();render()">${t('reset')}</button><small>${t('legal')}</small></div>`;}};
+function repHtml(){const[f,to]=range();const rows=DB.cars.map(c=>({c,...carStats(DB,c.id,f,to)}));const s=k=>rows.reduce((a,r)=>a+r[k],0);
+ return`<h3>${t('reports')} ${esc(DB.set.agency||'')} (${f} → ${to})</h3><table><tr><th>${t('car')}</th><th>${t('income')}</th><th>${t('due')}</th><th>${t('expenses')}</th><th>${t('profit')}</th></tr>${rows.map(r=>`<tr><td>${esc(r.c.name)} ${esc(r.c.plate)}</td><td>${mad(r.income)}</td><td>${mad(r.due)}</td><td>${mad(r.exp)}</td><td>${mad(r.profit)}</td></tr>`).join('')}<tr><th>${t('tot')}</th><th>${mad(s('income'))}</th><th>${mad(s('due'))}</th><th>${mad(s('exp'))}</th><th>${mad(s('profit'))}</th></tr></table>`;}
+function dl(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),5000);}
+function csv(){const[f,to]=range();const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';const r=[[t('car'),t('plate'),t('income'),t('due'),t('expenses'),t('profit')]];DB.cars.forEach(c=>{const s=carStats(DB,c.id,f,to);r.push([c.name,c.plate,s.income,s.due,s.exp,s.profit]);});
+ r.push([]);r.push([t('bookings')]);DB.bookings.filter(b=>inR(b.start,f,to)).forEach(b=>r.push([nm('cars',b.car),nm('clients',b.client),b.start,b.end,total(b),b.paid,b.status]));
+ dl(new Blob(['\ufeff'+r.map(x=>x.map(q).join(',')).join('\n')],{type:'text/csv;charset=utf-8'}),`rapport_${f}_${to}.csv`);}
+/* forms */
+function form(e,id){const r=id?DB[e].find(x=>x.id===id):{status:'reserved',date:today(),start:today(),end:today()};
+ $('#modal').innerHTML=`<div class="box"><h3>${t(id?'edit':'add')}</h3>`+S[e].map(([k,ty,o])=>{const v=r[k]??'';let i;
+ if(ty==='ref')i=`<select id="f_${k}">${DB[o].map(x=>`<option value="${x.id}" ${x.id===v?'selected':''}>${esc(x.name)}</option>`).join('')}</select>`;
+ else if(ty==='select')i=`<select id="f_${k}">${o.map(x=>`<option value="${x}" ${x===v?'selected':''}>${t(x)}</option>`).join('')}</select>`;
+ else i=`<input id="f_${k}" type="${ty}" value="${esc(v)}" ${ty==='number'?'step="any" inputmode="decimal"':''}>`;return`<label>${t(k)}${i}</label>`;}).join('')+`<button class="b" onclick="saveForm('${e}','${id||''}')">${t('save')}</button><button onclick="closeM()">${t('cancel')}</button></div>`;
+ $('#modal').style.display='flex';
+ if(e==='bookings'){const sync=()=>{const c=DB.cars.find(x=>x.id===$('#f_car').value);if(c)$('#f_price').value=c.price;};$('#f_car').onchange=sync;if(!id)sync();}}
+const closeM=()=>$('#modal').style.display='none';
+async function saveForm(e,id){const o={};S[e].forEach(([k,ty])=>{const v=$('#f_'+k).value;o[k]=ty==='number'?(v===''?0:+v):v.trim();});
+ const first=S[e][0][0];if(!o[first]){alert(t('bad'));return;}
+ if(e==='bookings'){if(!o.car||!o.client||!o.start||!o.end||o.end<o.start||o.price<0){alert(t('bad'));return;}const c=conflict(DB,{...o,id});if(c){alert(t('conflict')+'\n'+c.start+' → '+c.end);return;}}
+ if(e==='expenses'&&(!o.car||!o.date||o.amount<=0)){alert(t('bad'));return;}
+ if(e==='docs'&&!o.car){alert(t('bad'));return;}
+ if(id)Object.assign(DB[e].find(x=>x.id===id),o);else DB[e].push({id:uid(),...o});await save();closeM();render();}
+async function del(e,id){if(e==='cars'&&DB.bookings.some(b=>b.car===id))return alert(t('hasb'));if(e==='clients'&&DB.bookings.some(b=>b.client===id))return alert(t('hasb'));if(!confirm(t('sure')))return;DB[e]=DB[e].filter(x=>x.id!==id);await save();render();}
+/* print: contract + PV */
+function showDoc(h){$('#print').innerHTML=`<div class="noprint"><button class="b" onclick="window.print()">🖨 ${t('print')}</button><button onclick="$('#print').style.display='none'">${t('close')}</button><small>✏ ${L==='ar'?'يمكن تعديل النص مباشرة قبل الطباعة':'Texte modifiable avant impression'}</small></div><div class="doc" contenteditable="true">${h}</div>`;$('#print').style.display='block';}
+function showContract(id){const b=DB.bookings.find(x=>x.id===id),c=DB.cars.find(x=>x.id===b.car),k=DB.clients.find(x=>x.id===b.client)||{};
+ const m={agency:DB.set.agency||'',client:k.name,cin:k.cin,license:k.license,phone:k.phone,car:c.name,plate:c.plate,start:b.start,end:b.end,days:days(b.start,b.end),price:b.price,total:total(b),deposit:b.deposit,km:c.km,today:today()};
+ showDoc((DB.set['tpl_'+L]||DEF[L]).split(/\{\{(\w+)\}\}/).map((p,i)=>i%2?esc(m[p]??''):esc(p)).join(''));}
+function ho(id,kind){const b=DB.bookings.find(x=>x.id===id),c=DB.cars.find(x=>x.id===b.car),r=b[kind];
+ if(r&&confirm(L==='ar'?'المحضر موجود. عرضه؟ (إلغاء = تعديله)':'PV existant. Afficher ? (Annuler = refaire)'))return showPV(b,kind);
+ window._p=[];window._sig='';
+ $('#modal').innerHTML=`<div class="box"><h3>${t(kind)} — ${esc(c.name)}</h3><label>${t('km')}<input id="h_km" type="number" value="${kind==='out'?c.km:(b.out?b.out.km:c.km)}"></label><label>${t('fl')}<select id="h_fl"><option>1/4</option><option>1/2</option><option>3/4</option><option selected>4/4</option></select></label><label>${t('note')}<textarea id="h_n" rows="3"></textarea></label><label>${t('ph')}<input type="file" accept="image/*" multiple onchange="photos(this.files)"></label><div id="h_ph" class="ph"></div><label>${t('sg')}</label><canvas id="sg"></canvas><button onclick="sigClr()">${t('clr')}</button><br><button class="b" onclick="saveHO('${id}','${kind}')">${t('save')}</button><button onclick="closeM()">${t('cancel')}</button></div>`;$('#modal').style.display='flex';sigInit();}
+async function photos(fs){for(const f of fs){const im=await createImageBitmap(f),s=Math.min(1,900/im.width),c=document.createElement('canvas');c.width=im.width*s;c.height=im.height*s;c.getContext('2d').drawImage(im,0,0,c.width,c.height);_p.push(c.toDataURL('image/jpeg',.6));}$('#h_ph').innerHTML=_p.map(p=>`<img src="${p}">`).join('');}
+function sigInit(){const c=$('#sg');c.width=c.offsetWidth*2;c.height=280;const x=c.getContext('2d');x.lineWidth=4;x.lineCap='round';let d=0;const p=e=>{const r=c.getBoundingClientRect();return[(e.clientX-r.left)*2,(e.clientY-r.top)*2];};
+ c.onpointerdown=e=>{d=1;x.beginPath();x.moveTo(...p(e));c.setPointerCapture(e.pointerId);};c.onpointermove=e=>{if(d){x.lineTo(...p(e));x.stroke();_sig=1;}};c.onpointerup=()=>d=0;}
+function sigClr(){const c=$('#sg');c.getContext('2d').clearRect(0,0,c.width,c.height);_sig='';}
+async function saveHO(id,kind){const b=DB.bookings.find(x=>x.id===id);b[kind]={date:new Date().toISOString(),km:+$('#h_km').value||0,fuel:$('#h_fl').value,note:$('#h_n').value,photos:_p,sig:_sig?$('#sg').toDataURL():''};
+ const c=DB.cars.find(x=>x.id===b.car);if(kind==='out'){b.status='active';}else{b.status='done';}if(b[kind].km>c.km)c.km=b[kind].km;await save();closeM();render();showPV(b,kind);}
+function showPV(b,kind){const r=b[kind],c=DB.cars.find(x=>x.id===b.car),k=DB.clients.find(x=>x.id===b.client)||{};
+ showDoc(`<h3>${t(kind)} — ${esc(DB.set.agency||'')}</h3><table><tr><td>${t('car')}</td><td>${esc(c.name)} ${esc(c.plate)}</td></tr><tr><td>${t('client')}</td><td>${esc(k.name)} (${esc(k.cin)})</td></tr><tr><td>${t('date')}</td><td>${r.date.slice(0,16).replace('T',' ')}</td></tr><tr><td>${t('km')}</td><td>${r.km}</td></tr><tr><td>${t('fl')}</td><td>${r.fuel}</td></tr><tr><td>${t('note')}</td><td>${esc(r.note)}</td></tr></table><div>${r.photos.map(p=>`<img src="${p}" style="width:45%;margin:2%">`).join('')}</div><p>${t('sg')}:</p>${r.sig?`<img src="${r.sig}" style="width:240px;border:1px solid #999">`:''}`);}
+/* security */
+function lockUI(first){const l=$('#lock');l.innerHTML=`<div class="box" style="text-align:center"><h3>🚗 Car Manager Maroc</h3><p>${first?t('setpin'):t('pin')}</p><input id="pn" type="password" inputmode="numeric" autocomplete="off" style="text-align:center;font-size:22px"><button class="b" onclick="${first?'firstPin()':'tryPin()'}">${t(first?'save':'unlock')}</button>${!first&&DB.set.bio?`<button onclick="bioLogin()">👆 ${t('bioL')}</button>`:''}<p><button onclick="L=L==='ar'?'fr':'ar';lockUI(${first})">${t('lang')}</button></p></div>`;l.style.display='flex';$('#pn').focus();$('#pn').onkeydown=e=>e.key==='Enter'&&(first?firstPin():tryPin());}
+async function setPinVal(p){const s=hex(crypto.getRandomValues(new Uint8Array(8)));DB.set.salt=s;DB.set.pin=await hashPin(p,s);await save();}
+async function firstPin(){const p=$('#pn').value;if(!/^\d{4,}$/.test(p))return alert(t('bad'));await setPinVal(p);unlock();}
+async function setPin(){const p=prompt(t('setpin'));if(p===null)return;if(!/^\d{4,}$/.test(p))return alert(t('bad'));await setPinVal(p);alert(t('ok'));}
+async function tryPin(){if(await hashPin($('#pn').value,DB.set.salt)===DB.set.pin)unlock();else{alert(t('wrong'));$('#pn').value='';}}
+function unlock(){unlocked=true;$('#lock').style.display='none';L=DB.set.lang||L;render();}
+function doLock(){unlocked=false;lockUI(false);}
+const rnd=()=>crypto.getRandomValues(new Uint8Array(32));
+async function bioOn(){try{const c=await navigator.credentials.create({publicKey:{challenge:rnd(),rp:{name:'Car Manager Maroc'},user:{id:rnd().slice(0,16),name:'owner',displayName:'owner'},pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required'}}});DB.set.bio=[...new Uint8Array(c.rawId)];await save();alert(t('ok'));}catch(e){alert(t('fail'));}}
+async function bioLogin(){try{await navigator.credentials.get({publicKey:{challenge:rnd(),allowCredentials:[{type:'public-key',id:new Uint8Array(DB.set.bio)}],userVerification:'required'}});unlock();}catch(e){alert(t('fail'));}}
+async function backup(){const pw=prompt(t('pw'));if(!pw)return;dl(new Blob([await enc(DB,pw)]),`carmanager_${today()}.cmm`);}
+async function restore(f){if(!f)return;const pw=prompt(t('pw'));if(!pw)return;try{const d=await dec(await f.arrayBuffer(),pw);if(!confirm(t('sure')))return;DB=d;await save();alert(t('ok'));render();}catch(e){alert(t('fail'));}}
+let hid=0;document.addEventListener('visibilitychange',()=>{if(document.hidden)hid=Date.now();else if(unlocked&&Date.now()-hid>60000)doLock();});
+(async()=>{DB=(await load())||{cars:[],clients:[],bookings:[],expenses:[],docs:[],set:{}};L=DB.set.lang||'ar';navigator.storage&&navigator.storage.persist&&navigator.storage.persist();
+ if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});lockUI(!DB.set.pin);})();
+</script></body></html>
